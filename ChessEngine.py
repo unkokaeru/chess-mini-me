@@ -74,10 +74,11 @@ class GameState:
             )
         ]
 
-    def make_move(self, move: Move) -> None:
+    def make_move(self, move: Move, human_turn: bool = True) -> None:
         """
         Make a move by changing the board accordingly
         :param move: Move
+        :param human_turn: bool
         :return: None
         """
 
@@ -118,10 +119,16 @@ class GameState:
             self.enPassantPossible = ()
 
         # Pawn promotion
-        if move.isPawnPromotion:
-            promoted_piece = input(
-                "Promote to Q, R, B or N: "
-            )  # TODO: add a GUI to select the piece TODO: add error handling
+        if move.isPawnPromotion:  # TODO: add error handling
+            if human_turn:
+                # If it is the human's turn, ask for the piece to promote to
+                promoted_piece = input(
+                    "Promote to Q, R, B or N: "
+                )  # TODO: add a GUI to select the piece
+            else:
+                # If it is the AI's turn, promote to a queen by default (for now) TODO: add AI
+                promoted_piece = "Q"
+
             self.board[move.endRow][move.endCol] = move.pieceMoved[0] + promoted_piece
 
         # Castle move
@@ -380,7 +387,7 @@ class GameState:
 
         return in_check, pins, checks
 
-    def get_valid_moves(self) -> list[Move]:  # implement a faster version later
+    def get_valid_moves(self) -> list[Move]:
         """
         Gets a list of valid moves for the current board and player
         :return: list[Move]

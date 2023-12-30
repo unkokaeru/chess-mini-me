@@ -6,6 +6,7 @@ The main driver file. This will handle user input and displaying the current Gam
 
 import pygame as p
 import ChessEngine
+import ChessAI
 from pygame import Color
 
 
@@ -53,6 +54,10 @@ def main() -> None:
     :return: None
     """
 
+    # TODO: add a main menu, settings, and a game over screen
+    # TODO: add asynchronous programming
+    # TODO: refactor code to be more modular
+
     # Initialize pygame
     p.init()
     screen = p.display.set_mode((WIDTH, HEIGHT))
@@ -71,8 +76,17 @@ def main() -> None:
     game_over = False
     colors = [p.Color("white"), p.Color("gray")]
 
+    # Initialize players (if False, AI is playing)
+    player_white_human = False
+    player_black_human = False
+
     # Main game loop
     while running:
+        # Human turn handlerss
+        human_turn = (gamestate.whiteToMove and player_white_human) or (
+            not gamestate.whiteToMove and player_black_human
+        )
+
         for event in p.event.get():
             # Quit handlers
             if event.type == p.QUIT:
@@ -82,7 +96,7 @@ def main() -> None:
             elif (
                 event.type == p.MOUSEBUTTONDOWN
             ):  # TODO: add drag and drop functionality
-                if not game_over:
+                if not game_over and human_turn:
                     location = p.mouse.get_pos()
                     col = location[0] // SQ_SIZE
                     row = location[1] // SQ_SIZE
@@ -111,11 +125,14 @@ def main() -> None:
 
             # Key handlers
             elif event.type == p.KEYDOWN:
+                # Undo move
                 if event.key == p.K_z:
                     gamestate.undo_move()
                     move_made = True
                     animate = False
                     valid_moves = gamestate.get_valid_moves()
+
+                # Reset board
                 if event.key == p.K_r:
                     gamestate = ChessEngine.GameState()
                     valid_moves = gamestate.get_valid_moves()
@@ -123,6 +140,13 @@ def main() -> None:
                     player_clicks = []
                     move_made = False
                     animate = False
+
+        # AI move handlers
+        if not game_over and not human_turn:
+            ai_move = ChessAI.find_random_move(valid_moves)
+            gamestate.make_move(ai_move, human_turn)
+            move_made = True
+            animate = True
 
         # Update the graphics
         if move_made:

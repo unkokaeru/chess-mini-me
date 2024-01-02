@@ -14,13 +14,3 @@ def find_random_move(valid_moves: list) -> Move:
     """
 
     return valid_moves[random.randint(0, len(valid_moves) - 1)]
-
-
-def choose_promotion(promotions: list) -> str:
-    """
-    Pick a random promotion
-    :param promotion: list of valid promotions
-    :return: a random promotion
-    """
-
-    return promotions[random.randint(0, len(promotions) - 1)]

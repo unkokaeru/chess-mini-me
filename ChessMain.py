@@ -10,16 +10,7 @@ import ChessAI
 from pygame import Color
 
 
-# Global variables
-
-WIDTH = HEIGHT = 800
-DIMENSION = 8  # dimensions of a chess board are 8x8
-SQ_SIZE = HEIGHT // DIMENSION
-MAX_FPS = 30
-IMAGES: dict = {}
-
-
-def load_images() -> None:
+def load_images(SQ_SIZE: int, IMAGES: dict) -> None:
     """
     Initalise a global dictionary of images
     :return: None
@@ -58,6 +49,13 @@ def main() -> None:
     # TODO: add asynchronous programming
     # TODO: refactor code to be more modular
 
+    # Initialize constants
+    WIDTH = HEIGHT = 800
+    DIMENSION = 8  # dimensions of a chess board are 8x8
+    SQ_SIZE = HEIGHT // DIMENSION
+    MAX_FPS = 30
+    IMAGES: dict = {}
+
     # Initialize pygame
     p.init()
     screen = p.display.set_mode((WIDTH, HEIGHT))
@@ -66,7 +64,7 @@ def main() -> None:
 
     # Initialize game state
     gamestate = ChessEngine.GameState()
-    load_images()
+    load_images(SQ_SIZE, IMAGES)
     running = True
     sq_selected: tuple = ()
     player_clicks: list[tuple] = []
@@ -152,20 +150,36 @@ def main() -> None:
         if move_made:
             if animate:
                 animate_move(
-                    gamestate.moveLog[-1], screen, gamestate.board, clock, colors
+                    gamestate.moveLog[-1],
+                    screen,
+                    gamestate.board,
+                    clock,
+                    colors,
+                    DIMENSION,
+                    SQ_SIZE,
+                    IMAGES,
                 )
             valid_moves = gamestate.get_valid_moves()
             move_made = False
             animate = False
-        draw_gamestate(screen, gamestate, valid_moves, sq_selected, colors)
+        draw_gamestate(
+            screen,
+            gamestate,
+            valid_moves,
+            sq_selected,
+            colors,
+            SQ_SIZE,
+            DIMENSION,
+            IMAGES,
+        )
 
         # Checkmate and stalemate handlers
         if gamestate.checkmate:
             game_over = True
             if gamestate.whiteToMove:
-                draw_text(screen, "Black wins by checkmate")
+                draw_text(screen, "Black wins by checkmate", WIDTH, HEIGHT)
             else:
-                draw_text(screen, "White wins by checkmate")
+                draw_text(screen, "White wins by checkmate", WIDTH, HEIGHT)
 
         # Refresh the screen
         clock.tick(MAX_FPS)
@@ -177,6 +191,7 @@ def highlight_squares(
     gamestate: ChessEngine.GameState,
     valid_moves: list,
     sq_selected: tuple,
+    SQ_SIZE: int,
 ) -> None:  # TODO: add highlighting for last move
     """
     Highlight square selected and moves for piece selected
@@ -210,6 +225,9 @@ def draw_gamestate(
     valid_moves: list,
     sq_selected: tuple,
     colors: list[Color],
+    SQ_SIZE: int,
+    DIMENSION: int,
+    IMAGES: dict,
 ) -> None:
     """
     Responsible for all the graphics within a current gamestate
@@ -221,16 +239,18 @@ def draw_gamestate(
     """
 
     # Draw the board
-    draw_board(screen, colors)
+    draw_board(screen, colors, DIMENSION, SQ_SIZE)
 
     # Highlight squares
-    highlight_squares(screen, gamestate, valid_moves, sq_selected)
+    highlight_squares(screen, gamestate, valid_moves, sq_selected, SQ_SIZE)
 
     # Draw pieces
-    draw_pieces(screen, gamestate.board)
+    draw_pieces(screen, gamestate.board, DIMENSION, SQ_SIZE, IMAGES)
 
 
-def draw_board(screen: p.Surface, colors: list[Color]) -> None:
+def draw_board(
+    screen: p.Surface, colors: list[Color], DIMENSION: int, SQ_SIZE: int
+) -> None:
     """
     Draw the squares on the board
     :param screen: the screen to draw on
@@ -246,7 +266,9 @@ def draw_board(screen: p.Surface, colors: list[Color]) -> None:
             )
 
 
-def draw_pieces(screen: p.Surface, board: list) -> None:
+def draw_pieces(
+    screen: p.Surface, board: list, DIMENSION: int, SQ_SIZE: int, IMAGES: dict
+) -> None:
     """
     Draw the pieces on the board using the current GameState.board
     :param screen: the screen to draw on
@@ -266,7 +288,7 @@ def draw_pieces(screen: p.Surface, board: list) -> None:
 
 
 def draw_text(
-    screen: p.Surface, text: str
+    screen: p.Surface, text: str, WIDTH: int, HEIGHT: int
 ) -> None:  # TODO: Add a background to the text
     """
     Draw text on the screen
@@ -291,6 +313,9 @@ def animate_move(
     board: list,
     clock: p.time.Clock,
     colors: list[Color],
+    DIMENSION: int,
+    SQ_SIZE: int,
+    IMAGES: dict,
 ) -> None:
     """
     Animate a move
@@ -317,8 +342,8 @@ def animate_move(
         )
 
         # Re-draw the entire board TODO: only redraw the squares that changed
-        draw_board(screen, colors)
-        draw_pieces(screen, board)
+        draw_board(screen, colors, DIMENSION, SQ_SIZE)
+        draw_pieces(screen, board, DIMENSION, SQ_SIZE, IMAGES)
 
         # Erase the piece moved from its ending square
         color = colors[(move.endRow + move.endCol) % 2]

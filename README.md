@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project is a chess game implemented in Python, using the Pygame library for graphical representation. It consists of two primary files: `ChessEngine.py` and `ChessMain.py`. The `ChessEngine.py` contains the logic of the chess game, including the rules, movements of pieces, and game state. The `ChessMain.py` file is responsible for the graphical user interface (GUI), handling user inputs, and rendering the game state on the screen.
+This project is a chess game implemented in Python, using the Pygame library for graphical representation. It consists of two primary files: `engine.py` and `main.py`. The `engine.py` contains the logic of the chess game, including the rules, movements of pieces, and game state. The `main.py` file is responsible for the graphical user interface (GUI), handling user inputs, and rendering the game state on the screen.
 
 ## Key Features
 
@@ -23,10 +23,10 @@ This project is a chess game implemented in Python, using the Pygame library for
 
 2. **Download**: Clone the repository or download the source code.
 
-3. **Run the Game**: Navigate to the project directory and run the `ChessMain.py` script:
+3. **Run the Game**: Navigate to the project directory and run the `main.py` script:
 
    ```
-   python ChessMain.py
+   python main.py
    ```
 
 ## Usage
@@ -41,8 +41,8 @@ This project is a chess game implemented in Python, using the Pygame library for
 ## Customization
 
 - **Images**: Replace the piece images in the 'images' directory to customize the appearance.
-- **Board Colors**: Modify the `colors` array in `ChessMain.py` to change the board's color scheme.
-- **Animation Speed**: Adjust the `frames_per_square` variable in `ChessMain.py` to change the animation speed.
+- **Board Colors**: Modify the `colors` array in `main.py` to change the board's color scheme.
+- **Animation Speed**: Adjust the `frames_per_square` variable in `main.py` to change the animation speed.
 
 ## Contributing
 

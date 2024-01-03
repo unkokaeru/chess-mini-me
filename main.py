@@ -5,8 +5,8 @@ The main driver file. This will handle user input and displaying the current Gam
 # Imports
 
 import pygame as p
-import ChessEngine
-import ChessAI
+import engine
+import movefinder
 from pygame import Color
 
 
@@ -49,21 +49,21 @@ def main() -> None:
     # TODO: add asynchronous programming
     # TODO: refactor code to be more modular
 
-    # Initialize constants
+    # Initalise constants
     WIDTH = HEIGHT = 800
     DIMENSION = 8  # dimensions of a chess board are 8x8
     SQ_SIZE = HEIGHT // DIMENSION
     MAX_FPS = 30
     IMAGES: dict = {}
 
-    # Initialize pygame
+    # Initalise pygame
     p.init()
     screen = p.display.set_mode((WIDTH, HEIGHT))
     clock = p.time.Clock()
     screen.fill(p.Color("white"))
 
-    # Initialize game state
-    gamestate = ChessEngine.GameState()
+    # Initalise game state
+    gamestate = engine.GameState()
     load_images(SQ_SIZE, IMAGES)
     running = True
     sq_selected: tuple = ()
@@ -74,15 +74,15 @@ def main() -> None:
     game_over = False
     colors = [p.Color("white"), p.Color("gray")]
 
-    # Initialize players (if False, AI is playing)
-    player_white_human = False
+    # Initalise players (if False, AI is playing)
+    player_white_human = True
     player_black_human = False
 
     # Main game loop
     while running:
         # Human turn handlerss
-        human_turn = (gamestate.whiteToMove and player_white_human) or (
-            not gamestate.whiteToMove and player_black_human
+        human_turn = (gamestate.white_to_move and player_white_human) or (
+            not gamestate.white_to_move and player_black_human
         )
 
         for event in p.event.get():
@@ -108,7 +108,7 @@ def main() -> None:
                         sq_selected = (row, col)
                         player_clicks.append(sq_selected)
                     if len(player_clicks) == 2:
-                        move = ChessEngine.Move(
+                        move = engine.Move(
                             player_clicks[0], player_clicks[1], gamestate.board
                         )
                         for i in range(len(valid_moves)):
@@ -132,7 +132,7 @@ def main() -> None:
 
                 # Reset board
                 if event.key == p.K_r:
-                    gamestate = ChessEngine.GameState()
+                    gamestate = engine.GameState()
                     valid_moves = gamestate.get_valid_moves()
                     sq_selected = ()
                     player_clicks = []
@@ -141,7 +141,7 @@ def main() -> None:
 
         # AI move handlers
         if not game_over and not human_turn:
-            ai_move = ChessAI.find_random_move(valid_moves)
+            ai_move = movefinder.find_best_move(gamestate, valid_moves)
             gamestate.make_move(ai_move, human_turn)
             move_made = True
             animate = True
@@ -150,7 +150,7 @@ def main() -> None:
         if move_made:
             if animate:
                 animate_move(
-                    gamestate.moveLog[-1],
+                    gamestate.move_log[-1],
                     screen,
                     gamestate.board,
                     clock,
@@ -176,10 +176,14 @@ def main() -> None:
         # Checkmate and stalemate handlers
         if gamestate.checkmate:
             game_over = True
-            if gamestate.whiteToMove:
+            if gamestate.white_to_move:
                 draw_text(screen, "Black wins by checkmate", WIDTH, HEIGHT)
             else:
                 draw_text(screen, "White wins by checkmate", WIDTH, HEIGHT)
+
+        if gamestate.stalemate:
+            game_over = True
+            draw_text(screen, "Stalemate", WIDTH, HEIGHT)
 
         # Refresh the screen
         clock.tick(MAX_FPS)
@@ -188,7 +192,7 @@ def main() -> None:
 
 def highlight_squares(
     screen: p.Surface,
-    gamestate: ChessEngine.GameState,
+    gamestate: engine.GameState,
     valid_moves: list,
     sq_selected: tuple,
     SQ_SIZE: int,
@@ -205,7 +209,7 @@ def highlight_squares(
     if sq_selected != ():
         row, col = sq_selected
 
-        if gamestate.board[row][col][0] == ("w" if gamestate.whiteToMove else "b"):
+        if gamestate.board[row][col][0] == ("w" if gamestate.white_to_move else "b"):
             # Highlight the selected square
             s = p.Surface((SQ_SIZE, SQ_SIZE))
             s.set_alpha(100)
@@ -215,13 +219,13 @@ def highlight_squares(
             screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
             s.fill(p.Color("yellow"))
             for move in valid_moves:
-                if move.startRow == row and move.startCol == col:
-                    screen.blit(s, (move.endCol * SQ_SIZE, move.endRow * SQ_SIZE))
+                if move.start_row == row and move.start_col == col:
+                    screen.blit(s, (move.end_col * SQ_SIZE, move.end_row * SQ_SIZE))
 
 
 def draw_gamestate(
     screen: p.Surface,
-    gamestate: ChessEngine.GameState,
+    gamestate: engine.GameState,
     valid_moves: list,
     sq_selected: tuple,
     colors: list[Color],
@@ -308,7 +312,7 @@ def draw_text(
 
 
 def animate_move(
-    move: ChessEngine.Move,
+    move: engine.Move,
     screen: p.Surface,
     board: list,
     clock: p.time.Clock,
@@ -327,8 +331,8 @@ def animate_move(
     """
 
     # Calculate the frames per square and the total number of frames
-    dR = move.endRow - move.startRow
-    dC = move.endCol - move.startCol
+    dR = move.end_row - move.start_row
+    dC = move.end_col - move.start_col
     frames_per_square = 5  # frames to move one square (arbitrary) -> change later to be proportional to the distance
     frame_count = (
         abs(dR) + abs(dC)
@@ -337,8 +341,8 @@ def animate_move(
     # Animate the move
     for frame in range(frame_count + 1):
         r, c = (
-            move.startRow + dR * frame / frame_count,
-            move.startCol + dC * frame / frame_count,
+            move.start_row + dR * frame / frame_count,
+            move.start_col + dC * frame / frame_count,
         )
 
         # Re-draw the entire board TODO: only redraw the squares that changed
@@ -346,19 +350,19 @@ def animate_move(
         draw_pieces(screen, board, DIMENSION, SQ_SIZE, IMAGES)
 
         # Erase the piece moved from its ending square
-        color = colors[(move.endRow + move.endCol) % 2]
+        color = colors[(move.end_row + move.end_col) % 2]
         end_square = p.Rect(
-            move.endCol * SQ_SIZE, move.endRow * SQ_SIZE, SQ_SIZE, SQ_SIZE
+            move.end_col * SQ_SIZE, move.end_row * SQ_SIZE, SQ_SIZE, SQ_SIZE
         )
         p.draw.rect(screen, color, end_square)
 
         # Draw captured piece onto rectangle
-        if move.pieceCaptured != "--":
-            screen.blit(IMAGES[move.pieceCaptured], end_square)
+        if move.piece_captured != "--":
+            screen.blit(IMAGES[move.piece_captured], end_square)
 
         # Draw the moving piece
         screen.blit(
-            IMAGES[move.pieceMoved], p.Rect(c * SQ_SIZE, r * SQ_SIZE, SQ_SIZE, SQ_SIZE)
+            IMAGES[move.piece_moved], p.Rect(c * SQ_SIZE, r * SQ_SIZE, SQ_SIZE, SQ_SIZE)
         )
         p.display.flip()
         clock.tick(60)

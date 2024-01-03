@@ -5,7 +5,7 @@
 from engine import Move, GameState
 
 
-def find_best_move(gamestate: GameState, valid_moves: list, depth=3) -> Move:
+def find_best_move(gamestate: GameState, valid_moves: list[Move], depth=3) -> Move:
     """
     Find the best move using a depth-limited MinMax algorithm.
     :param gamestate: the current game state
@@ -48,14 +48,14 @@ def find_best_move(gamestate: GameState, valid_moves: list, depth=3) -> Move:
 
 
 def minmax(
-    gamestate,
-    depth,
-    maximizing_player,
-    alpha,
-    beta,
-    PIECE_SCORE,
-    CHECKMATE_SCORE,
-    STALEMATE_SCORE,
+    gamestate: GameState,
+    depth: int,
+    maximizing_player: bool,
+    alpha: float,
+    beta: float,
+    PIECE_SCORE: dict[str, int],
+    CHECKMATE_SCORE: int,
+    STALEMATE_SCORE: int,
 ):
     """
     MinMax algorithm with Alpha-Beta pruning.
@@ -149,7 +149,10 @@ def minmax(
 
 
 def score_board(
-    gamestate: GameState, PIECE_SCORE: dict, CHECKMATE_SCORE: int, STALEMATE_SCORE: int
+    gamestate: GameState,
+    PIECE_SCORE: dict[str, int],
+    CHECKMATE_SCORE: int,
+    STALEMATE_SCORE: int,
 ) -> int:  # TODO: add positional scoring
     """
     Score the material on the board and consider checkmate and stalemate.

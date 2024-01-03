@@ -5,12 +5,18 @@ The main driver file. This will handle user input and displaying the current Gam
 # Imports
 
 import pygame as p
-import engine
+from pygame import Surface
+from engine import Move, GameState
 import movefinder
 from pygame import Color
 
+# Types
 
-def load_images(SQ_SIZE: int, IMAGES: dict) -> None:
+COORDS = tuple[int, int]
+IMAGE = Surface
+
+
+def load_images(SQ_SIZE: int, IMAGES: dict[str, IMAGE]) -> None:
     """
     Initalise a global dictionary of images
     :return: None
@@ -54,7 +60,6 @@ def main() -> None:
     DIMENSION = 8  # dimensions of a chess board are 8x8
     SQ_SIZE = HEIGHT // DIMENSION
     MAX_FPS = 30
-    IMAGES: dict = {}
 
     # Initalise pygame
     p.init()
@@ -63,11 +68,12 @@ def main() -> None:
     screen.fill(p.Color("white"))
 
     # Initalise game state
-    gamestate = engine.GameState()
-    load_images(SQ_SIZE, IMAGES)
+    gamestate = GameState()
+    images: dict[str, IMAGE] = {}
+    load_images(SQ_SIZE, images)
     running = True
-    sq_selected: tuple = ()
-    player_clicks: list[tuple] = []
+    sq_selected: tuple | COORDS = ()
+    player_clicks: list[tuple | COORDS] = []
     valid_moves = gamestate.get_valid_moves()
     move_made = False
     animate = False
@@ -108,9 +114,7 @@ def main() -> None:
                         sq_selected = (row, col)
                         player_clicks.append(sq_selected)
                     if len(player_clicks) == 2:
-                        move = engine.Move(
-                            player_clicks[0], player_clicks[1], gamestate.board
-                        )
+                        move = Move(player_clicks[0], player_clicks[1], gamestate.board)
                         for i in range(len(valid_moves)):
                             if move == valid_moves[i]:
                                 gamestate.make_move(valid_moves[i])
@@ -132,7 +136,7 @@ def main() -> None:
 
                 # Reset board
                 if event.key == p.K_r:
-                    gamestate = engine.GameState()
+                    gamestate = GameState()
                     valid_moves = gamestate.get_valid_moves()
                     sq_selected = ()
                     player_clicks = []
@@ -157,7 +161,7 @@ def main() -> None:
                     colors,
                     DIMENSION,
                     SQ_SIZE,
-                    IMAGES,
+                    images,
                 )
             valid_moves = gamestate.get_valid_moves()
             move_made = False
@@ -170,7 +174,7 @@ def main() -> None:
             colors,
             SQ_SIZE,
             DIMENSION,
-            IMAGES,
+            images,
         )
 
         # Checkmate and stalemate handlers
@@ -191,10 +195,10 @@ def main() -> None:
 
 
 def highlight_squares(
-    screen: p.Surface,
-    gamestate: engine.GameState,
-    valid_moves: list,
-    sq_selected: tuple,
+    screen: IMAGE,
+    gamestate: GameState,
+    valid_moves: list[Move],
+    sq_selected: tuple | COORDS,
     SQ_SIZE: int,
 ) -> None:  # TODO: add highlighting for last move
     """
@@ -224,14 +228,14 @@ def highlight_squares(
 
 
 def draw_gamestate(
-    screen: p.Surface,
-    gamestate: engine.GameState,
-    valid_moves: list,
-    sq_selected: tuple,
+    screen: IMAGE,
+    gamestate: GameState,
+    valid_moves: list[Move],
+    sq_selected: tuple | COORDS,
     colors: list[Color],
     SQ_SIZE: int,
     DIMENSION: int,
-    IMAGES: dict,
+    IMAGES: dict[str, IMAGE],
 ) -> None:
     """
     Responsible for all the graphics within a current gamestate
@@ -253,7 +257,7 @@ def draw_gamestate(
 
 
 def draw_board(
-    screen: p.Surface, colors: list[Color], DIMENSION: int, SQ_SIZE: int
+    screen: IMAGE, colors: list[Color], DIMENSION: int, SQ_SIZE: int
 ) -> None:
     """
     Draw the squares on the board
@@ -271,7 +275,11 @@ def draw_board(
 
 
 def draw_pieces(
-    screen: p.Surface, board: list, DIMENSION: int, SQ_SIZE: int, IMAGES: dict
+    screen: IMAGE,
+    board: list[list[str]],
+    DIMENSION: int,
+    SQ_SIZE: int,
+    IMAGES: dict[str, IMAGE],
 ) -> None:
     """
     Draw the pieces on the board using the current GameState.board
@@ -292,7 +300,7 @@ def draw_pieces(
 
 
 def draw_text(
-    screen: p.Surface, text: str, WIDTH: int, HEIGHT: int
+    screen: IMAGE, text: str, WIDTH: int, HEIGHT: int
 ) -> None:  # TODO: Add a background to the text
     """
     Draw text on the screen
@@ -312,14 +320,14 @@ def draw_text(
 
 
 def animate_move(
-    move: engine.Move,
-    screen: p.Surface,
-    board: list,
+    move: Move,
+    screen: IMAGE,
+    board: list[list[str]],
     clock: p.time.Clock,
     colors: list[Color],
     DIMENSION: int,
     SQ_SIZE: int,
-    IMAGES: dict,
+    IMAGES: dict[str, IMAGE],
 ) -> None:
     """
     Animate a move

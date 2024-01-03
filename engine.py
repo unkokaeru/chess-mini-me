@@ -5,7 +5,11 @@ The chess engine, responsible for storing the game state, determining valid move
 # Imports
 
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal
+
+# Types
+
+DIRECTION = Literal[-1, 0, 1]
 
 
 class GameState:
@@ -46,7 +50,7 @@ class GameState:
 
         # Establish which player's turn it is (to begin)
         self.white_to_move = True
-        self.move_log: list = []
+        self.move_log: list[Move] = []
 
         # Keep track of the king's location
         self.white_king_location = (7, 4)
@@ -57,11 +61,11 @@ class GameState:
         self.stalemate = False
 
         # Keep track of pins and checks
-        self.pins: list = []
-        self.checks: list = []
+        self.pins: list[tuple[int, int, DIRECTION, DIRECTION]] | list = []
+        self.checks: list[tuple[int, int, DIRECTION, DIRECTION]] | list = []
 
         # Keep track of en passant moves
-        self.en_passant_possible: tuple = ()
+        self.en_passant_possible: tuple[int, int] | tuple = ()
 
         # Keep track of castling rights
         self.current_castling_rights = CastleRights(True, True, True, True)
@@ -305,7 +309,7 @@ class GameState:
         # Check for pins first
         for j in range(len(directions)):
             d = directions[j]
-            possible_pin: tuple = ()
+            possible_pin: tuple = ()  # TODO: Fix typing
 
             # Check for pins and checks 1 square at a time
             for i in range(1, 8):
@@ -401,7 +405,7 @@ class GameState:
         """
 
         # Initialise the list of valid moves
-        moves: list = []
+        moves: list[Move] = []
 
         # Check if the player is in check or pinned
         is_in_check, pins, checks = self.check_for_pins_and_checks()
@@ -525,7 +529,7 @@ class GameState:
         """
 
         # Initialise the list of moves
-        moves: list = []
+        moves: list[Move] = []
 
         # Iterate through each square on the board
         for row in range(len(self.board)):
@@ -555,7 +559,7 @@ class GameState:
 
         # Initialise variables
         piece_pinned = False
-        pin_direction: tuple = ()
+        pin_direction: tuple = ()  # TODO: Fix typing
 
         pawnPromotion = False
 
@@ -676,7 +680,7 @@ class GameState:
 
         # Initialise variables
         piece_pinned = False
-        pin_direction: tuple = ()
+        pin_direction: tuple = ()  # TODO: Fix typing
 
         # Check if the rook is pinned
         for i in range(len(self.pins) - 1, -1, -1):
@@ -790,7 +794,7 @@ class GameState:
 
         # Initialise variables
         piece_pinned = False
-        pin_direction: tuple = ()
+        pin_direction: tuple = ()  # TODO: Fix typing
 
         # Check if the bishop is pinned
         for i in range(len(self.pins) - 1, -1, -1):
@@ -998,8 +1002,8 @@ class Move:
 
     def __init__(
         self,
-        startSq: tuple,
-        endSq: tuple,
+        startSq: tuple[int, int],
+        endSq: tuple[int, int],
         board: list[list[str]],
         enPassant: bool = False,
         castle: bool = False,

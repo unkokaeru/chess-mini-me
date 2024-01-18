@@ -9,6 +9,7 @@ from pygame import Surface
 from engine import Move, GameState
 import movefinder
 from pygame import Color
+import ctypes
 
 # Types
 
@@ -56,7 +57,7 @@ def main() -> None:
     # TODO: refactor code to be more modular
 
     # Initalise constants
-    WIDTH = HEIGHT = 800
+    WIDTH = HEIGHT = ctypes.windll.user32.GetSystemMetrics(1) - 100
     DIMENSION = 8  # dimensions of a chess board are 8x8
     SQ_SIZE = HEIGHT // DIMENSION
     MAX_FPS = 30

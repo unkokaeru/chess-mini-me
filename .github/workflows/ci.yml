@@ -1,0 +1,27 @@
+name: Continuous integration
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Run the test suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the development dependencies
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Run the tests
+        run: python -m pytest

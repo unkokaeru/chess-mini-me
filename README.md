@@ -1,60 +1,66 @@
-# Chess Engine for the Mini-Me Project
+# Chess Mini-Me
 
-## Project Overview
+A small, readable game of chess written in Python, with a Pygame interface and
+a built-in computer opponent. The project is intended to be easy to follow, so
+the rules, the search and the interface are kept in separate modules and the
+code favours clarity over cleverness.
 
-This project is a chess game implemented in Python, using the Pygame library for graphical representation. It consists of two primary files: `engine.py` and `main.py`. The `engine.py` contains the logic of the chess game, including the rules, movements of pieces, and game state. The `main.py` file is responsible for the graphical user interface (GUI), handling user inputs, and rendering the game state on the screen.
+## Features
 
-## Key Features
+- Full legal move generation, including castling, en passant, pawn promotion,
+  pins, checks, checkmate and stalemate.
+- A computer opponent using negamax search with alpha-beta pruning and a
+  material-plus-position evaluation.
+- A Pygame interface with a main menu, drag-and-drop or click-to-move input,
+  move animation, last-move and legal-move highlighting, an on-board pawn
+  promotion chooser, and a game-over screen.
+- A test suite covering move generation (via perft), checkmate, stalemate, en
+  passant, castling, promotion and the move finder.
 
-- **Game Logic**: Implementations of all chess rules, including en passant, castling, pawn promotion, and checks/checkmates.
-- **Move Generation**: Algorithm to generate all valid moves for a given game state, including consideration of pins and checks.
-- **Graphical User Interface**: A simple and intuitive interface using Pygame for interactive gameplay.
-- **Move Animation**: Smooth animations for piece movements, captures, and special moves like castling and pawn promotion.
-- **Undo Functionality**: Ability to undo moves and explore different game strategies.
-- **Checkmate and Stalemate Detection**: The game can detect and announce checkmate and stalemate conditions.
+## Project layout
+
+    chess_mini_me/
+        constants.py     Shared board, direction and evaluation constants.
+        engine.py        Game state, move generation, making and undoing moves.
+        move_finder.py   The negamax search and board evaluation.
+        interface.py     The Pygame interface (the only module needing Pygame).
+    tests/               The pytest test suite.
+    main.py              The entry point.
+    images/              The piece images.
+
+The engine and move finder have no dependency on Pygame, so they can be
+imported and tested without a display.
 
 ## Installation
 
-1. **Prerequisites**: Ensure Python 3.x is installed on your system. Additionally, install the Pygame library using the command:
+You will need Python 3.10 or newer.
 
-   ```
-   pip install pygame
-   ```
+    python -m pip install -r requirements.txt
 
-2. **Download**: Clone the repository or download the source code.
+## Running the game
 
-3. **Run the Game**: Navigate to the project directory and run the `main.py` script:
+    python main.py
 
-   ```
-   python main.py
-   ```
+In the main menu, choose whether each colour is played by a human or the
+computer, then start the game. During play:
 
-## Usage
+- Drag a piece to a square, or click the piece and then click the destination.
+- When a pawn reaches the far rank, click the piece to promote it to.
+- Press `Z` to undo the last move.
+- Press `R` to return to the menu, or `Q` to quit.
 
-- The game starts with a standard chess board.
-- Click on a piece to see valid moves highlighted.
-- Click on a highlighted square to move the piece.
-- Use the 'z' key to undo a move.
-- Use the 'r' key to reset the board.
-- The game automatically detects and announces checkmate or stalemate.
+## Running the tests
 
-## Customization
-
-- **Images**: Replace the piece images in the 'images' directory to customize the appearance.
-- **Board Colors**: Modify the `colors` array in `main.py` to change the board's color scheme.
-- **Animation Speed**: Adjust the `frames_per_square` variable in `main.py` to change the animation speed.
-
-## Contributing
-
-Contributions to the project are welcome! If you have suggestions or improvements, feel free to fork the repository and submit a pull request.
-
-## License
-
-This project is open-source and available under the MIT License. See the LICENSE file for more details.
+    python -m pip install -r requirements-dev.txt
+    python -m pytest
 
 ## Acknowledgements
 
-- Thanks to the Python and Pygame communities for the resources and support.
-- Special thanks to Eddie Sharick for creating a wonderful tutorial series that this project is heavily inspirede by.
+The design is inspired by Eddie Sharick's chess programming tutorial series.
+This rewrite restructures the code into a package, fixes several bugs (most
+notably checkmate being reported as stalemate), removes duplication, and adds a
+test suite.
 
----
+## Licence
+
+Released under the MIT Licence. See the `LICENSE` file for details.

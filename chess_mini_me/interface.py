@@ -1,8 +1,9 @@
 """The graphical interface for the chess game, built with Pygame.
 
-This module turns the rules in :mod:`chess_mini_me.engine` and the search in
-:mod:`chess_mini_me.move_finder` into a playable game. It is the only module
-that depends on Pygame, so importing the engine for tests or scripting never
+This module turns the rules in :mod:`chess_mini_me.engine`, the search in
+:mod:`chess_mini_me.move_finder` and the learned opponent in
+:mod:`chess_mini_me.cloner` into a playable game. It is the only module that
+depends on Pygame, so importing the engine for tests or scripting never
 requires a display.
 
 Responsibilities are gathered into a single :class:`ChessInterface` object so
@@ -14,12 +15,18 @@ function as arguments.
 from __future__ import annotations
 
 import pathlib
-from typing import Callable
 
 import pygame
 
-from chess_mini_me import constants, move_finder
+from chess_mini_me import constants, opponent
 from chess_mini_me.engine import GameState, Move
+from chess_mini_me.training import (
+    BLACK_WIN_VALUE,
+    DRAW_VALUE,
+    WHITE_WIN_VALUE,
+    StyleRecorder,
+    default_store,
+)
 
 # A square on the board, or ``None`` when nothing is selected.
 Square = tuple[int, int]
@@ -33,6 +40,7 @@ LAST_MOVE_COLOUR = pygame.Color(205, 210, 106)
 LEGAL_MOVE_COLOUR = pygame.Color(106, 168, 79)
 BACKGROUND_COLOUR = pygame.Color(49, 46, 43)
 TEXT_COLOUR = pygame.Color(235, 235, 235)
+MUTED_TEXT_COLOUR = pygame.Color(170, 165, 158)
 PANEL_COLOUR = pygame.Color(70, 66, 60)
 HIGHLIGHTED_PANEL_COLOUR = pygame.Color(120, 110, 95)
 OVERLAY_COLOUR = pygame.Color(0, 0, 0)
@@ -54,9 +62,11 @@ class ChessInterface:
         self.clock = pygame.time.Clock()
 
         self.large_font = pygame.font.SysFont("helvetica", self.square_size // 2, True)
+        self.medium_font = pygame.font.SysFont("helvetica", self.square_size // 3, True)
         self.small_font = pygame.font.SysFont("helvetica", self.square_size // 4, True)
 
         self.piece_images = self._load_piece_images()
+        self.store = default_store()
 
     # ------------------------------------------------------------------
     # Set-up helpers
@@ -124,18 +134,18 @@ class ChessInterface:
                 break
         pygame.quit()
 
-    def _show_main_menu(self) -> tuple[bool, bool] | None:
+    def _show_main_menu(self) -> tuple[str, str] | None:
         """Display the main menu and collect the choice of players.
 
         Returns:
-            A tuple ``(white_is_human, black_is_human)``, or ``None`` if the
-            player closed the window.
+            A tuple ``(white_player, black_player)`` of player-type names, or
+            ``None`` if the player closed the window.
         """
-        white_is_human = True
-        black_is_human = False
+        white_player = opponent.PLAYER_HUMAN
+        black_player = opponent.PLAYER_COMPUTER
 
         while True:
-            buttons = self._draw_main_menu(white_is_human, black_is_human)
+            buttons = self._draw_main_menu(white_player, black_player)
             pygame.display.flip()
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
@@ -145,35 +155,39 @@ class ChessInterface:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     action = self._button_action_at(buttons, event.pos)
                     if action == "toggle_white":
-                        white_is_human = not white_is_human
+                        white_player = opponent.next_player_type(white_player)
                     elif action == "toggle_black":
-                        black_is_human = not black_is_human
+                        black_player = opponent.next_player_type(black_player)
+                    elif action == "learn_lichess":
+                        self._run_lichess_learning()
                     elif action == "start":
-                        return white_is_human, black_is_human
+                        return white_player, black_player
                     elif action == "quit":
                         return None
 
-    def _play_game(self, white_is_human: bool, black_is_human: bool) -> bool:
+    def _play_game(self, white_player: str, black_player: str) -> bool:
         """Play a single game.
 
         Args:
-            white_is_human: Whether White is controlled by the player.
-            black_is_human: Whether Black is controlled by the player.
+            white_player: The player type controlling White.
+            black_player: The player type controlling Black.
 
         Returns:
             True to return to the main menu, or False to quit the program.
         """
         gamestate = GameState()
         valid_moves = gamestate.get_valid_moves()
+        controller = opponent.OpponentController(self.store)
+        recorder = StyleRecorder()
 
         selected_square: Square | None = None
         is_dragging = False
         drag_position = (0, 0)
+        has_learned_from_game = False
 
         while True:
-            human_to_move = (gamestate.white_to_move and white_is_human) or (
-                not gamestate.white_to_move and black_is_human
-            )
+            player_to_move = white_player if gamestate.white_to_move else black_player
+            human_to_move = player_to_move == opponent.PLAYER_HUMAN
             game_over = gamestate.checkmate or gamestate.stalemate
 
             for event in pygame.event.get():
@@ -202,7 +216,7 @@ class ChessInterface:
                             drag_position = event.pos
                     else:
                         moved, valid_moves = self._attempt_move(
-                            gamestate, valid_moves, selected_square, clicked
+                            gamestate, valid_moves, selected_square, clicked, recorder
                         )
                         if moved:
                             selected_square, is_dragging = None, False
@@ -220,16 +234,18 @@ class ChessInterface:
                     released = self._square_at(event.pos)
                     if released != selected_square:
                         moved, valid_moves = self._attempt_move(
-                            gamestate, valid_moves, selected_square, released
+                            gamestate, valid_moves, selected_square, released, recorder
                         )
                         selected_square = None
 
-            # Let the computer reply when it is its turn.
+            # Let a computer or Mini-Me player reply when it is its turn.
             if not game_over and not human_to_move:
-                computer_move = move_finder.find_best_move(gamestate, valid_moves)
-                if computer_move is not None:
-                    self._animate_move(gamestate, computer_move)
-                    gamestate.make_move(computer_move)
+                move, promotion_piece = controller.choose_move(
+                    player_to_move, gamestate, valid_moves
+                )
+                if move is not None:
+                    self._animate_move(gamestate, move)
+                    gamestate.make_move(move, promotion_piece)
                     valid_moves = gamestate.get_valid_moves()
 
             self._draw_position(
@@ -237,6 +253,9 @@ class ChessInterface:
             )
             if gamestate.checkmate or gamestate.stalemate:
                 self._draw_game_over_banner(gamestate)
+                if not has_learned_from_game:
+                    self._learn_from_game(gamestate, recorder, controller)
+                    has_learned_from_game = True
             pygame.display.flip()
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
@@ -250,6 +269,7 @@ class ChessInterface:
         valid_moves: list[Move],
         start_square: Square,
         end_square: Square,
+        recorder: StyleRecorder | None = None,
     ) -> tuple[bool, list[Move]]:
         """Make the move from one square to another when it is legal.
 
@@ -258,6 +278,8 @@ class ChessInterface:
             valid_moves: The legal moves for the side to move.
             start_square: The square the piece is moving from.
             end_square: The square the piece is moving to.
+            recorder: An optional recorder that captures the human's move for
+                later learning.
 
         Returns:
             A tuple ``(was_made, valid_moves)``, where ``valid_moves`` is
@@ -271,6 +293,8 @@ class ChessInterface:
                     promotion_piece = self._choose_promotion(
                         legal_move.piece_moved[0]
                     )
+                if recorder is not None:
+                    recorder.record(gamestate, legal_move, promotion_piece)
                 gamestate.make_move(legal_move, promotion_piece)
                 return True, gamestate.get_valid_moves()
         return False, valid_moves
@@ -356,6 +380,165 @@ class ChessInterface:
                     for piece_type, rectangle in option_rectangles.items():
                         if rectangle.collidepoint(event.pos):
                             return piece_type
+
+    # ------------------------------------------------------------------
+    # Learning
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _game_result_value(gamestate: GameState) -> float:
+        """Return the finished game's result from White's perspective.
+
+        Args:
+            gamestate: The finished game state.
+
+        Returns:
+            ``1`` for a White win, ``-1`` for a Black win, ``0`` for a draw.
+        """
+        if gamestate.checkmate:
+            return BLACK_WIN_VALUE if gamestate.white_to_move else WHITE_WIN_VALUE
+        return DRAW_VALUE
+
+    def _learn_from_game(
+        self,
+        gamestate: GameState,
+        recorder: StyleRecorder,
+        controller: "opponent.OpponentController",
+    ) -> None:
+        """Teach the Mini-Me from the human moves of the finished game.
+
+        Args:
+            gamestate: The finished game state.
+            recorder: The recorder holding the human's moves.
+            controller: The opponent controller to refresh afterwards.
+        """
+        if not recorder.has_moves():
+            return
+        self._draw_message_overlay(
+            ["Mini-Me is learning your style ..."], self.medium_font
+        )
+        pygame.display.flip()
+        try:
+            opponent.learn_from_finished_game(
+                self.store, recorder, self._game_result_value(gamestate)
+            )
+            controller.reload_mini_me()
+        except ImportError:
+            self._draw_message_overlay(
+                ["Install PyTorch to let the Mini-Me learn.", "Press R or Q."],
+                self.small_font,
+            )
+            pygame.display.flip()
+            pygame.time.wait(1500)
+
+    def _run_lichess_learning(self) -> None:
+        """Prompt for a Lichess username and train the Mini-Me from it."""
+        username = self._text_input_prompt("Lichess username (Enter to confirm):")
+        if not username:
+            return
+
+        # Imported here so the menu does not require these libraries unless the
+        # player actually uses the Lichess feature.
+        from chess_mini_me import lichess
+        from chess_mini_me.training import learn_from_examples
+
+        try:
+            self._draw_message_overlay(
+                [f"Downloading {username}'s games ..."], self.medium_font
+            )
+            pygame.display.flip()
+            pgn_text = lichess.download_games(username)
+
+            self._draw_message_overlay(["Analysing playing style ..."], self.medium_font)
+            pygame.display.flip()
+            games = lichess.analyse_games(pgn_text, username)
+            examples = lichess.extract_examples(pgn_text, username)
+            if len(examples) == 0:
+                self._show_temporary_message(
+                    ["No games were found for that player."], self.medium_font
+                )
+                return
+
+            summary_lines = lichess.summarise_style(games).splitlines()
+            self._draw_message_overlay(
+                ["Training the Mini-Me ...", ""] + summary_lines[:6],
+                self.small_font,
+            )
+            pygame.display.flip()
+            learn_from_examples(self.store, examples, epochs=8)
+            self._show_temporary_message(
+                [f"Mini-Me trained on {len(examples)} of", f"{username}'s moves."],
+                self.medium_font,
+            )
+        except ValueError as error:
+            self._show_temporary_message([str(error)], self.medium_font)
+        except ImportError as error:
+            self._show_temporary_message(
+                ["This feature needs extra libraries:", str(error)], self.small_font
+            )
+
+    def _text_input_prompt(self, prompt_text: str) -> str | None:
+        """Collect a single line of text from the player.
+
+        Args:
+            prompt_text: The prompt to display above the input box.
+
+        Returns:
+            The entered text, or ``None`` if the player cancelled.
+        """
+        entered_text = ""
+        while True:
+            self.screen.fill(BACKGROUND_COLOUR)
+            self._blit_centred_text(
+                prompt_text, self.medium_font, self.board_size // 2 - self.square_size,
+                baseline_is_centre=True,
+            )
+            box = pygame.Rect(
+                self.board_size // 6,
+                self.board_size // 2,
+                self.board_size * 2 // 3,
+                self.square_size,
+            )
+            pygame.draw.rect(self.screen, PANEL_COLOUR, box, border_radius=6)
+            self._blit_centred_text(
+                entered_text or "_", self.medium_font, box.centery,
+                baseline_is_centre=True,
+            )
+            self._blit_centred_text(
+                "Enter to confirm, Escape to cancel",
+                self.small_font,
+                self.board_size // 2 + self.square_size * 2,
+                baseline_is_centre=True,
+            )
+            pygame.display.flip()
+            self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN:
+                        return entered_text.strip()
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    if event.key == pygame.K_BACKSPACE:
+                        entered_text = entered_text[:-1]
+                    elif event.unicode.isprintable():
+                        entered_text += event.unicode
+
+    def _show_temporary_message(
+        self, lines: list[str], font: pygame.font.Font, milliseconds: int = 2200
+    ) -> None:
+        """Show a message over the screen for a short time.
+
+        Args:
+            lines: The lines of text to show.
+            font: The font to render with.
+            milliseconds: How long to display the message.
+        """
+        self._draw_message_overlay(lines, font)
+        pygame.display.flip()
+        pygame.time.wait(milliseconds)
 
     # ------------------------------------------------------------------
     # Drawing
@@ -576,55 +759,90 @@ class ChessInterface:
             message = f"{winner} wins by checkmate"
         else:
             message = "Stalemate"
+        self._draw_message_overlay(
+            [message, "Press R for menu or Q to quit"],
+            self.large_font,
+            secondary_font=self.small_font,
+        )
 
+    def _draw_message_overlay(
+        self,
+        lines: list[str],
+        font: pygame.font.Font,
+        secondary_font: pygame.font.Font | None = None,
+    ) -> None:
+        """Draw lines of text centred over a dimmed board.
+
+        Args:
+            lines: The lines to draw; the first uses ``font`` and the rest use
+                ``secondary_font`` when given.
+            font: The font for the first line.
+            secondary_font: The font for the remaining lines, if different.
+        """
         overlay = pygame.Surface((self.board_size, self.board_size))
-        overlay.set_alpha(150)
+        overlay.set_alpha(170)
         overlay.fill(OVERLAY_COLOUR)
         self.screen.blit(overlay, (0, 0))
-        self._blit_centred_text(message, self.large_font, self.board_size // 2 - self.square_size // 2)
-        self._blit_centred_text(
-            "Press R for menu or Q to quit",
-            self.small_font,
-            self.board_size // 2 + self.square_size // 2,
-        )
+
+        line_height = font.get_height() + self.square_size // 6
+        total_height = line_height * len(lines)
+        top = (self.board_size - total_height) // 2
+        for index, line in enumerate(lines):
+            chosen_font = font if index == 0 or secondary_font is None else secondary_font
+            rendered = chosen_font.render(line, True, TEXT_COLOUR)
+            left = (self.board_size - rendered.get_width()) // 2
+            self.screen.blit(rendered, (left, top + index * line_height))
 
     # ------------------------------------------------------------------
     # Main menu drawing
     # ------------------------------------------------------------------
 
     def _draw_main_menu(
-        self, white_is_human: bool, black_is_human: bool
+        self, white_player: str, black_player: str
     ) -> dict[str, pygame.Rect]:
         """Draw the main menu and return its clickable regions.
 
         Args:
-            white_is_human: Whether White is currently set to a human player.
-            black_is_human: Whether Black is currently set to a human player.
+            white_player: The player type currently controlling White.
+            black_player: The player type currently controlling Black.
 
         Returns:
             A mapping from action name to the rectangle that triggers it.
         """
         self.screen.fill(BACKGROUND_COLOUR)
         self._blit_centred_text(
-            constants.WINDOW_TITLE, self.large_font, self.square_size
+            constants.WINDOW_TITLE, self.large_font, self.square_size // 2
         )
 
-        button_width = self.board_size // 2
-        button_height = self.square_size
+        mini_me_ready = self.store.model_path.exists()
+        status = (
+            "A trained Mini-Me is ready to play."
+            if mini_me_ready
+            else "No Mini-Me yet: play it or train from Lichess."
+        )
+        rendered_status = self.small_font.render(status, True, MUTED_TEXT_COLOUR)
+        self.screen.blit(
+            rendered_status,
+            ((self.board_size - rendered_status.get_width()) // 2,
+             self.square_size + self.square_size // 3),
+        )
+
+        button_width = self.board_size * 2 // 3
+        button_height = int(self.square_size * 0.8)
         button_left = (self.board_size - button_width) // 2
-        first_top = self.square_size * 3
-        spacing = button_height + self.square_size // 2
+        first_top = int(self.square_size * 2.2)
+        spacing = button_height + self.square_size // 5
 
-        def describe(colour_name: str, is_human: bool) -> str:
-            return f"{colour_name}: {'Human' if is_human else 'Computer'}"
-
-        buttons: dict[str, pygame.Rect] = {}
         rows = (
-            ("toggle_white", describe("White", white_is_human), False),
-            ("toggle_black", describe("Black", black_is_human), False),
+            ("toggle_white",
+             f"White: {opponent.PLAYER_LABELS[white_player]}", False),
+            ("toggle_black",
+             f"Black: {opponent.PLAYER_LABELS[black_player]}", False),
+            ("learn_lichess", "Learn from Lichess", False),
             ("start", "Start game", True),
             ("quit", "Quit", True),
         )
+        buttons: dict[str, pygame.Rect] = {}
         for index, (action, label, emphasised) in enumerate(rows):
             rectangle = pygame.Rect(
                 button_left, first_top + index * spacing, button_width, button_height
@@ -632,7 +850,7 @@ class ChessInterface:
             colour = HIGHLIGHTED_PANEL_COLOUR if emphasised else PANEL_COLOUR
             pygame.draw.rect(self.screen, colour, rectangle, border_radius=8)
             self._blit_centred_text(
-                label, self.small_font, rectangle.centery, baseline_is_centre=True
+                label, self.medium_font, rectangle.centery, baseline_is_centre=True
             )
             buttons[action] = rectangle
         return buttons

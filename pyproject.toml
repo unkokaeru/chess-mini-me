@@ -4,18 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chess-mini-me"
-version = "1.0.0"
-description = "A small, readable chess engine and Pygame interface."
+version = "2.0.0"
+description = "A small chess engine and Pygame interface with a learning Mini-Me opponent."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-dependencies = ["pygame>=2.0.0"]
+dependencies = ["pygame>=2.0.0", "numpy>=1.21"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+mini-me = ["torch>=2.0", "chess>=1.9", "requests>=2.25", "pandas>=1.3"]
+dev = ["pytest>=7.0", "chess>=1.9", "pandas>=1.3"]
 
 [project.scripts]
 chess-mini-me = "chess_mini_me.interface:run_game"
+chess-mini-me-train = "chess_mini_me.train_cli:main"
 
 [tool.setuptools]
 packages = ["chess_mini_me"]

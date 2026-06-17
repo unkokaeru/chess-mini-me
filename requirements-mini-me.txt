@@ -1,0 +1,6 @@
+# Extra libraries for the Mini-Me cloner and the Lichess importer.
+-r requirements.txt
+torch>=2.0
+chess>=1.9
+requests>=2.25
+pandas>=1.3

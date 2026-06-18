@@ -193,6 +193,86 @@ def default_store() -> StyleStore:
     return StyleStore(directory)
 
 
+# The profile that online play (learning from your own games) writes to.
+LEARNING_PROFILE_NAME = "my-style"
+
+
+def data_root() -> pathlib.Path:
+    """Return the base directory that holds all Mini-Me data.
+
+    The location is ``~/.chess_mini_me`` unless overridden by the
+    ``CHESS_MINI_ME_DATA`` environment variable.
+
+    Returns:
+        The base data directory.
+    """
+    import os
+
+    override = os.environ.get("CHESS_MINI_ME_DATA")
+    return (
+        pathlib.Path(override)
+        if override
+        else pathlib.Path.home() / ".chess_mini_me"
+    )
+
+
+def profiles_root() -> pathlib.Path:
+    """Return the directory that holds the named Mini-Me profiles.
+
+    Returns:
+        The profiles directory, created if necessary.
+    """
+    root = data_root() / "profiles"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def safe_profile_name(name: str) -> str:
+    """Return a filesystem-safe version of a profile name.
+
+    Args:
+        name: The requested profile name.
+
+    Returns:
+        The name with unusual characters replaced by hyphens, never empty.
+    """
+    cleaned = "".join(
+        character if character.isalnum() or character in "-_" else "-"
+        for character in name.strip()
+    ).strip("-")
+    return cleaned or "profile"
+
+
+def store_for_profile(name: str) -> StyleStore:
+    """Return the data store for a named profile.
+
+    Args:
+        name: The profile name.
+
+    Returns:
+        A :class:`StyleStore` rooted at that profile's directory.
+    """
+    return StyleStore(profiles_root() / safe_profile_name(name))
+
+
+def list_profile_names() -> list[str]:
+    """Return the names of all saved profiles, sorted alphabetically.
+
+    A profile counts as saved once it has a trained model or a dataset.
+
+    Returns:
+        The sorted list of profile names.
+    """
+    root = profiles_root()
+    names = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        if (entry / "mini_me.pt").exists() or (entry / "style_dataset.npz").exists():
+            names.append(entry.name)
+    return sorted(names)
+
+
 class StyleRecorder:
     """Collect the player's moves during a live game as training examples."""
 

@@ -14,7 +14,11 @@ import argparse
 import sys
 
 from chess_mini_me import lichess
-from chess_mini_me.training import StyleStore, default_store, learn_from_examples
+from chess_mini_me.training import (
+    StyleStore,
+    learn_from_examples,
+    store_for_profile,
+)
 
 
 def _report_epoch(epoch: int, mean_loss: float) -> None:
@@ -53,9 +57,16 @@ def parse_arguments(argument_values: list[str]) -> argparse.Namespace:
         help="How many training passes to make (default: 8).",
     )
     parser.add_argument(
+        "--profile",
+        default=None,
+        help="Name of the Mini-Me profile to create or update "
+             "(default: the username). Existing profiles are extended.",
+    )
+    parser.add_argument(
         "--data-dir",
         default=None,
-        help="Where to store the dataset and model (default: ~/.chess_mini_me).",
+        help="A custom directory to store the dataset and model in, instead "
+             "of a named profile.",
     )
     parser.add_argument(
         "--token",
@@ -82,11 +93,12 @@ def main(argument_values: list[str] | None = None) -> int:
     arguments = parse_arguments(
         sys.argv[1:] if argument_values is None else argument_values
     )
-    store = (
-        default_store()
-        if arguments.data_dir is None
-        else StyleStore(__import__("pathlib").Path(arguments.data_dir))
-    )
+    if arguments.data_dir is not None:
+        import pathlib
+
+        store = StyleStore(pathlib.Path(arguments.data_dir))
+    else:
+        store = store_for_profile(arguments.profile or arguments.username)
 
     print(f"Downloading up to {arguments.max_games} games for "
           f"'{arguments.username}' from Lichess ...")
@@ -121,8 +133,9 @@ def main(argument_values: list[str] | None = None) -> int:
         print(f"Training needs PyTorch: {error}", file=sys.stderr)
         return 1
 
-    print(f"\nDone. The Mini-Me is saved in {store.directory} and is now "
-          "available as an opponent in the game menu.")
+    profile_name = arguments.profile or arguments.username
+    print(f"\nDone. The Mini-Me profile '{profile_name}' is saved in "
+          f"{store.directory} and is now selectable in the game menu.")
     return 0
 
 

@@ -55,6 +55,12 @@ PRIMARY_BUTTON_COLOUR = pygame.Color(90, 130, 90)
 PROGRESS_BAR_COLOUR = pygame.Color(120, 170, 110)
 OVERLAY_COLOUR = pygame.Color(0, 0, 0)
 
+# The smallest a board square may shrink to when the window is made small.
+MINIMUM_SQUARE_SIZE = 28
+
+# The side panel's width as a multiple of one board square.
+PANEL_SQUARE_COUNT = 3.4
+
 
 class _BackgroundProgress:
     """Shared state for a task running on a background thread.
@@ -81,26 +87,14 @@ class ChessInterface:
     def __init__(self) -> None:
         """Create the window and load the resources shared across the game."""
         pygame.init()
-        self.board_size = self._determine_board_size()
-        self.square_size = self.board_size // constants.BOARD_DIMENSION
-        self.board_size = self.square_size * constants.BOARD_DIMENSION
-
-        self.panel_width = int(self.square_size * 3.4)
-        self.window_width = self.board_size + self.panel_width
-        self.window_height = self.board_size
-
-        self.screen = pygame.display.set_mode(
-            (self.window_width, self.window_height)
-        )
-        pygame.display.set_caption(constants.WINDOW_TITLE)
         self.clock = pygame.time.Clock()
+        pygame.display.set_caption(constants.WINDOW_TITLE)
 
-        self.large_font = pygame.font.SysFont("helvetica", self.square_size // 2, True)
-        self.medium_font = pygame.font.SysFont("helvetica", self.square_size // 3, True)
-        self.small_font = pygame.font.SysFont("helvetica", self.square_size // 4)
-        self.move_font = pygame.font.SysFont("couriernew", self.square_size // 4)
+        # The window is resizable; the board, panel, fonts and piece images are
+        # all derived from the current window size and recomputed on a resize.
+        initial_width, initial_height = self._initial_window_size()
+        self._configure_layout(initial_width, initial_height)
 
-        self.piece_images = self._load_piece_images()
         self.games_directory = pathlib.Path.cwd() / "saved_games"
         self.selected_profile = self._initial_profile()
 
@@ -109,22 +103,57 @@ class ChessInterface:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _determine_board_size() -> int:
-        """Return a board size in pixels that fits the available display.
+    def _initial_window_size() -> tuple[int, int]:
+        """Return a sensible initial window size for the current display.
 
         Returns:
-            The side length of the square board, in pixels.
+            A ``(width, height)`` target that the layout is then fitted into.
         """
         try:
-            display_height = pygame.display.Info().current_h
+            info = pygame.display.Info()
+            width, height = info.current_w, info.current_h
         except pygame.error:
-            display_height = 0
-        if display_height <= 0:
-            return constants.FALLBACK_BOARD_SIZE_PIXELS
-        return max(
-            constants.BOARD_DIMENSION,
-            display_height - constants.WINDOW_MARGIN_PIXELS,
+            width, height = 0, 0
+        if width <= 0 or height <= 0:
+            size = constants.FALLBACK_BOARD_SIZE_PIXELS
+            return int(size * (1 + PANEL_SQUARE_COUNT / constants.BOARD_DIMENSION)), size
+        margin = constants.WINDOW_MARGIN_PIXELS
+        return width - margin, height - margin
+
+    def _configure_layout(self, target_width: int, target_height: int) -> None:
+        """Recompute the layout to fill a target window size.
+
+        The board is square and the panel is a fixed multiple of a board
+        square, so a single square size determines everything. It is chosen as
+        the largest that fits the target width and height, then the window,
+        fonts and piece images are rebuilt around it.
+
+        Args:
+            target_width: The width to fit into, in pixels.
+            target_height: The height to fit into, in pixels.
+        """
+        square_from_height = target_height // constants.BOARD_DIMENSION
+        square_from_width = int(
+            target_width / (constants.BOARD_DIMENSION + PANEL_SQUARE_COUNT)
         )
+        self.square_size = max(
+            MINIMUM_SQUARE_SIZE, min(square_from_height, square_from_width)
+        )
+        self.board_size = self.square_size * constants.BOARD_DIMENSION
+        self.panel_width = int(self.square_size * PANEL_SQUARE_COUNT)
+        self.window_width = self.board_size + self.panel_width
+        self.window_height = self.board_size
+
+        self.screen = pygame.display.set_mode(
+            (self.window_width, self.window_height), pygame.RESIZABLE
+        )
+
+        self.large_font = pygame.font.SysFont("helvetica", self.square_size // 2, True)
+        self.medium_font = pygame.font.SysFont("helvetica", self.square_size // 3, True)
+        self.small_font = pygame.font.SysFont("helvetica", self.square_size // 4)
+        self.move_font = pygame.font.SysFont("couriernew", self.square_size // 4)
+
+        self.piece_images = self._load_piece_images()
 
     def _load_piece_images(self) -> dict[str, pygame.Surface]:
         """Load and scale every piece image to the current square size.
@@ -198,6 +227,9 @@ class ChessInterface:
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     return None
                 if event.type == pygame.MOUSEBUTTONDOWN:
@@ -267,6 +299,9 @@ class ChessInterface:
                 san_cache = pgn.build_san_moves(gamestate)
 
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     return False
 
@@ -453,20 +488,19 @@ class ChessInterface:
             constants.BISHOP,
             constants.KNIGHT,
         )
-        panel_width = self.square_size * len(choices)
-        panel_left = (self.board_size - panel_width) // 2
-        panel_top = (self.board_size - self.square_size) // 2
-        option_rectangles = {
-            piece_type: pygame.Rect(
-                panel_left + index * self.square_size,
-                panel_top,
-                self.square_size,
-                self.square_size,
-            )
-            for index, piece_type in enumerate(choices)
-        }
-
         while True:
+            panel_width = self.square_size * len(choices)
+            panel_left = (self.board_size - panel_width) // 2
+            panel_top = (self.board_size - self.square_size) // 2
+            option_rectangles = {
+                piece_type: pygame.Rect(
+                    panel_left + index * self.square_size,
+                    panel_top,
+                    self.square_size,
+                    self.square_size,
+                )
+                for index, piece_type in enumerate(choices)
+            }
             overlay = pygame.Surface((self.board_size, self.board_size))
             overlay.set_alpha(160)
             overlay.fill(OVERLAY_COLOUR)
@@ -478,6 +512,9 @@ class ChessInterface:
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     return constants.QUEEN
                 if event.type == pygame.MOUSEBUTTONDOWN:
@@ -710,6 +747,9 @@ class ChessInterface:
         frame = 0
         while not progress.done:
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     quit_requested = True
             self._draw_progress_screen(title, progress, frame)
@@ -778,13 +818,13 @@ class ChessInterface:
             title: The heading of the notice.
             lines: The body lines of the notice.
         """
-        close_button = pygame.Rect(
-            (self.window_width - self.square_size * 2) // 2,
-            self.window_height - int(self.square_size * 1.4),
-            self.square_size * 2,
-            self.square_size,
-        )
         while True:
+            close_button = pygame.Rect(
+                (self.window_width - self.square_size * 2) // 2,
+                self.window_height - int(self.square_size * 1.4),
+                self.square_size * 2,
+                self.square_size,
+            )
             self.screen.fill(BACKGROUND_COLOUR)
             self._blit_centred_text(
                 title, self.large_font, self.square_size,
@@ -811,6 +851,9 @@ class ChessInterface:
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     pygame.event.post(pygame.event.Event(pygame.QUIT))
                     return
@@ -849,6 +892,9 @@ class ChessInterface:
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
 
             for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    self._configure_layout(event.w, event.h)
+                    continue
                 if event.type == pygame.QUIT:
                     pygame.event.post(pygame.event.Event(pygame.QUIT))
                     return None

@@ -9,6 +9,11 @@ search, the interface and the machine learning are kept in separate modules.
 
 - Full legal move generation, including castling, en passant, pawn promotion,
   pins, checks, checkmate and stalemate.
+- Every game-ending condition: checkmate, stalemate, threefold repetition,
+  the fifty-move rule, insufficient material, and resignation (by either the
+  player or the computer when its position is hopeless).
+- A move list shown beside the board, and the option to save a finished game
+  as a PGN file.
 - A classical computer opponent using negamax search with alpha-beta pruning
   and a material-plus-position evaluation.
 - A **Mini-Me** opponent that learns to imitate you. It is a convolutional
@@ -59,6 +64,7 @@ to the classical search, so the game is always playable.
         training.py      Behavioural-cloning training and on-disk persistence.
         lichess.py       Downloading and analysing games from Lichess.
         opponent.py      Choosing moves for computer and Mini-Me players.
+        pgn.py           Standard Algebraic Notation and PGN export.
         train_cli.py     A command-line tool to train from Lichess.
     tests/               The pytest test suite.
     main.py              The entry point for the game.
@@ -89,6 +95,9 @@ and Mini-Me, then start the game. During play:
 - Drag a piece to a square, or click the piece and then click the destination.
 - When a pawn reaches the far rank, click the piece to promote it to.
 - Press `Z` to undo the last move.
+- Use the **Resign** button in the side panel to resign the game.
+- When the game ends, the button becomes **Save as PGN**; the file is written
+  to the `games` folder inside the data directory (`~/.chess_mini_me/games`).
 - Press `R` to return to the menu, or `Q` to quit.
 
 After each game, the Mini-Me learns from the moves you made.

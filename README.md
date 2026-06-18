@@ -13,14 +13,19 @@ search, the interface and the machine learning are kept in separate modules.
   the fifty-move rule, insufficient material, and resignation (by either the
   player or the computer when its position is hopeless).
 - A move list shown beside the board, and the option to save a finished game
-  as a PGN file.
+  as a PGN file through the native operating-system save dialog.
+- Long operations (downloading games, training) run on a background thread
+  with a live progress screen, and results stay on screen until dismissed.
 - A classical computer opponent using negamax search with alpha-beta pruning
   and a material-plus-position evaluation.
 - A **Mini-Me** opponent that learns to imitate you. It is a convolutional
   neural network (PyTorch) trained by behavioural cloning on your moves, and it
   improves after every game you play against it.
-- An option to **train the Mini-Me from a Lichess account**, learning a player's
-  style from their game history.
+- An option to **train the Mini-Me from a Lichess account**, with an in-game
+  configuration screen (username, number of games, rated-only, target profile).
+- **Named Mini-Me profiles**: keep several Mini-Mes (your own learned style, or
+  ones imported from different Lichess players) and switch between them in the
+  menu. Re-importing or replaying updates the chosen profile.
 - A Pygame interface with a main menu, drag-and-drop or click-to-move input,
   move animation, highlighting, an on-board promotion chooser and a game-over
   screen.
@@ -49,8 +54,10 @@ it learns to predict the same move in the same position.
   moves and sampled with a temperature, so the Mini-Me tends to reach for the
   same openings, tactics and decisions as the player it has copied.
 
-Until a Mini-Me has been trained, choosing it as an opponent simply falls back
-to the classical search, so the game is always playable.
+Playing against the Mini-Me teaches a profile called ``my-style`` from your own
+moves, so over time it learns to copy you. Imported Lichess players are kept as
+separate named profiles. Until a chosen profile has been trained, the Mini-Me
+falls back to the classical search, so the game is always playable.
 
 ## Project layout
 
@@ -65,6 +72,7 @@ to the classical search, so the game is always playable.
         lichess.py       Downloading and analysing games from Lichess.
         opponent.py      Choosing moves for computer and Mini-Me players.
         pgn.py           Standard Algebraic Notation and PGN export.
+        dialogs.py       Native save dialog, with a headless fallback.
         train_cli.py     A command-line tool to train from Lichess.
     tests/               The pytest test suite.
     main.py              The entry point for the game.
@@ -108,9 +116,11 @@ From the main menu, choose "Learn from Lichess" and enter a username. Or use the
 command line:
 
     python train_from_lichess.py my_lichess_name --max-games 300 --epochs 8
+    python train_from_lichess.py my_lichess_name --profile rivals --max-games 500
 
-The trained Mini-Me and its dataset are stored in `~/.chess_mini_me` (override
-with the `CHESS_MINI_ME_DATA` environment variable).
+Each Mini-Me and its dataset are stored under `~/.chess_mini_me/profiles/`
+(override the base directory with the `CHESS_MINI_ME_DATA` environment
+variable). Saved games are written wherever you choose in the save dialog.
 
 ## Running the tests
 

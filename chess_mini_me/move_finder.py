@@ -86,7 +86,7 @@ def _negamax(
     """
     # A position with no legal moves is checkmate or stalemate; the flags were
     # set by the ``get_valid_moves`` call that produced ``valid_moves``.
-    if depth == 0 or not valid_moves:
+    if depth == 0 or not valid_moves or gamestate.draw:
         return perspective * evaluate_board(gamestate)
 
     best_score = -math.inf
@@ -126,7 +126,7 @@ def evaluate_board(gamestate: GameState) -> int:
             if gamestate.white_to_move
             else constants.CHECKMATE_SCORE
         )
-    if gamestate.stalemate:
+    if gamestate.stalemate or gamestate.draw:
         return constants.STALEMATE_SCORE
 
     score = 0

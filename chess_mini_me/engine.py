@@ -83,6 +83,9 @@ class Move:
         self.is_en_passant_move = is_en_passant_move
         self.is_castle_move = is_castle_move
 
+        # The piece a promoting pawn became, filled in when the move is made.
+        self.promotion_choice: str | None = None
+
         # A pawn reaching the far rank is promoted.
         self.is_pawn_promotion = (
             self.piece_moved == constants.WHITE + constants.PAWN
@@ -189,6 +192,20 @@ class GameState:
         self.current_castling_rights = CastleRights(True, True, True, True)
         self.castle_rights_log = [self.current_castling_rights.copy()]
 
+        # Game-ending state beyond checkmate and stalemate.
+        self.draw = False
+        self.draw_reason = ""
+        self.resigned_colour: str | None = None
+
+        # The half-move clock counts plies since the last capture or pawn
+        # move, for the fifty-move rule. The position counts support
+        # threefold-repetition detection.
+        self.halfmove_clock = 0
+        self.halfmove_clock_log: list[int] = []
+        self.position_counts: dict[str, int] = {}
+        self.position_key_log: list[str] = []
+        self._record_position()
+
     # ------------------------------------------------------------------
     # Making and undoing moves
     # ------------------------------------------------------------------
@@ -231,6 +248,7 @@ class GameState:
             self.en_passant_target = ()
 
         if move.is_pawn_promotion:
+            move.promotion_choice = promotion_piece
             self.board[move.end_row][move.end_column] = (
                 move.piece_moved[0] + promotion_piece
             )
@@ -240,6 +258,17 @@ class GameState:
 
         self._update_castle_rights(move)
         self.castle_rights_log.append(self.current_castling_rights.copy())
+
+        # A capture or pawn move resets the fifty-move clock; otherwise it
+        # advances. The resulting position is then recorded for repetition.
+        resets_clock = (
+            move.piece_moved[1] == constants.PAWN
+            or move.piece_captured != constants.EMPTY_SQUARE
+            or move.is_en_passant_move
+        )
+        self.halfmove_clock_log.append(self.halfmove_clock)
+        self.halfmove_clock = 0 if resets_clock else self.halfmove_clock + 1
+        self._record_position()
 
     def undo_move(self) -> None:
         """Reverse the most recent move and restore the previous state."""
@@ -274,9 +303,15 @@ class GameState:
         self.castle_rights_log.pop()
         self.current_castling_rights = self.castle_rights_log[-1].copy()
 
-        # Undoing a move can never leave the side to move mated or stalemated.
+        # Undoing a move can never leave the side to move mated, stalemated
+        # or in a drawn position.
         self.checkmate = False
         self.stalemate = False
+        self.draw = False
+        self.draw_reason = ""
+
+        self.halfmove_clock = self.halfmove_clock_log.pop()
+        self._forget_last_position()
 
     def _move_castling_rook(self, move: Move, undo: bool) -> None:
         """Move the rook that accompanies a castling king move.
@@ -355,6 +390,8 @@ class GameState:
         # never left stale by the move finder's deep search.
         self.checkmate = False
         self.stalemate = False
+        self.draw = False
+        self.draw_reason = ""
 
         self.in_check, self.pins, self.checks = self._find_pins_and_checks()
 
@@ -374,6 +411,8 @@ class GameState:
                 self.checkmate = True
             else:
                 self.stalemate = True
+        else:
+            self._update_draw_state()
 
         return moves
 
@@ -942,3 +981,158 @@ class GameState:
             0 <= row < constants.BOARD_DIMENSION
             and 0 <= column < constants.BOARD_DIMENSION
         )
+
+    # ------------------------------------------------------------------
+    # Draw detection, resignation and the game result
+    # ------------------------------------------------------------------
+
+    def _position_key(self) -> str:
+        """Return a string that uniquely identifies the current position.
+
+        Two positions repeat for the purposes of the threefold-repetition rule
+        when their pieces, side to move, castling rights and en passant
+        possibilities all match, which is exactly what this key captures.
+
+        Returns:
+            A compact string key for the current position.
+        """
+        squares = "".join("".join(row) for row in self.board)
+        side = constants.WHITE if self.white_to_move else constants.BLACK
+        rights = self.current_castling_rights
+        castling = "".join(
+            "1" if flag else "0"
+            for flag in (
+                rights.white_king_side,
+                rights.white_queen_side,
+                rights.black_king_side,
+                rights.black_queen_side,
+            )
+        )
+        en_passant = (
+            f"{self.en_passant_target[0]}{self.en_passant_target[1]}"
+            if self.en_passant_target
+            else "-"
+        )
+        return f"{squares}|{side}|{castling}|{en_passant}"
+
+    def _record_position(self) -> None:
+        """Record the current position for repetition detection."""
+        key = self._position_key()
+        self.position_key_log.append(key)
+        self.position_counts[key] = self.position_counts.get(key, 0) + 1
+
+    def _forget_last_position(self) -> None:
+        """Remove the most recently recorded position."""
+        key = self.position_key_log.pop()
+        remaining = self.position_counts.get(key, 0) - 1
+        if remaining <= 0:
+            self.position_counts.pop(key, None)
+        else:
+            self.position_counts[key] = remaining
+
+    def _update_draw_state(self) -> None:
+        """Set the draw flag and reason if the position is a draw.
+
+        This covers threefold repetition, the fifty-move rule and insufficient
+        mating material. Stalemate is handled separately by the caller.
+        """
+        if self.position_counts.get(self._position_key(), 0) >= 3:
+            self.draw = True
+            self.draw_reason = "threefold repetition"
+        elif self.halfmove_clock >= 100:
+            self.draw = True
+            self.draw_reason = "the fifty-move rule"
+        elif self._is_insufficient_material():
+            self.draw = True
+            self.draw_reason = "insufficient material"
+
+    def _is_insufficient_material(self) -> bool:
+        """Return whether neither side has enough material to deliver mate.
+
+        The recognised drawn material combinations are king versus king, king
+        and a single minor piece versus king, and king and bishop versus king
+        and bishop where both bishops stand on squares of the same colour.
+
+        Returns:
+            True if the position is a dead draw by insufficient material.
+        """
+        minor_pieces: list[tuple[int, int, str]] = []
+        for row in range(constants.BOARD_DIMENSION):
+            for column in range(constants.BOARD_DIMENSION):
+                piece = self.board[row][column]
+                if piece == constants.EMPTY_SQUARE or piece[1] == constants.KING:
+                    continue
+                if piece[1] in (constants.BISHOP, constants.KNIGHT):
+                    minor_pieces.append((row, column, piece))
+                else:
+                    # A pawn, rook or queen is enough to mate.
+                    return False
+
+        if len(minor_pieces) <= 1:
+            # King versus king, or king and one minor versus king.
+            return True
+        if len(minor_pieces) == 2:
+            first, second = minor_pieces
+            both_bishops = first[2][1] == constants.BISHOP and second[2][1] == constants.BISHOP
+            opposite_sides = first[2][0] != second[2][0]
+            same_square_colour = (first[0] + first[1]) % 2 == (second[0] + second[1]) % 2
+            return both_bishops and opposite_sides and same_square_colour
+        return False
+
+    def resign(self, colour: str) -> None:
+        """Resign the game on behalf of one colour.
+
+        Args:
+            colour: The colour that resigns (``"w"`` or ``"b"``).
+        """
+        self.resigned_colour = colour
+
+    def is_game_over(self) -> bool:
+        """Return whether the game has finished for any reason.
+
+        Returns:
+            True if the game is won, drawn or resigned.
+        """
+        return (
+            self.checkmate
+            or self.stalemate
+            or self.draw
+            or self.resigned_colour is not None
+        )
+
+    def result_string(self) -> str:
+        """Return the result in PGN notation.
+
+        Returns:
+            ``"1-0"``, ``"0-1"``, ``"1/2-1/2"`` or ``"*"`` while the game is
+            still in progress.
+        """
+        if self.checkmate:
+            return "0-1" if self.white_to_move else "1-0"
+        if self.resigned_colour == constants.WHITE:
+            return "0-1"
+        if self.resigned_colour == constants.BLACK:
+            return "1-0"
+        if self.stalemate or self.draw:
+            return "1/2-1/2"
+        return "*"
+
+    def outcome_description(self) -> str:
+        """Return a human-readable description of how the game ended.
+
+        Returns:
+            A short sentence describing the result, or an empty string while
+            the game is still in progress.
+        """
+        if self.checkmate:
+            winner = "Black" if self.white_to_move else "White"
+            return f"{winner} wins by checkmate"
+        if self.resigned_colour is not None:
+            loser = "White" if self.resigned_colour == constants.WHITE else "Black"
+            winner = "Black" if self.resigned_colour == constants.WHITE else "White"
+            return f"{winner} wins: {loser} resigned"
+        if self.stalemate:
+            return "Draw by stalemate"
+        if self.draw:
+            return f"Draw by {self.draw_reason}"
+        return ""

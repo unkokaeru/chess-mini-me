@@ -30,6 +30,14 @@ PLAYER_LABELS = {
     PLAYER_MINI_ME: "Mini-Me",
 }
 
+# The computer resigns once it is losing by at least this many centipawns,
+# which is roughly a queen and a rook of material.
+RESIGN_THRESHOLD_CENTIPAWNS = 1500
+
+# The computer only considers resigning after this many plies, to avoid
+# resigning over a fleeting early swing.
+MINIMUM_PLIES_BEFORE_RESIGNING = 12
+
 
 def next_player_type(player_type: str) -> str:
     """Return the next player type when cycling through the choices.
@@ -121,6 +129,32 @@ class OpponentController:
         """
         move = move_finder.find_best_move(gamestate, legal_moves)
         return move, constants.QUEEN
+
+    def should_resign(self, player_type: str, gamestate: "GameState") -> bool:
+        """Return whether the classical computer should resign now.
+
+        Only the classical computer resigns; the Mini-Me imitates a human and
+        plays on. Resignation is considered only once the position is hopeless
+        and enough moves have been played.
+
+        Args:
+            player_type: The player type about to move.
+            gamestate: The current game state.
+
+        Returns:
+            True if the computer should resign instead of moving.
+        """
+        if player_type != PLAYER_COMPUTER:
+            return False
+        if len(gamestate.move_log) < MINIMUM_PLIES_BEFORE_RESIGNING:
+            return False
+        white_perspective_score = move_finder.evaluate_board(gamestate)
+        mover_score = (
+            white_perspective_score
+            if gamestate.white_to_move
+            else -white_perspective_score
+        )
+        return mover_score <= -RESIGN_THRESHOLD_CENTIPAWNS
 
 
 def learn_from_finished_game(

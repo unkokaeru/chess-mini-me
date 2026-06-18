@@ -1,33 +1,36 @@
 """The graphical interface for the chess game, built with Pygame.
 
 This module turns the rules in :mod:`chess_mini_me.engine`, the search in
-:mod:`chess_mini_me.move_finder` and the learned opponent in
+:mod:`chess_mini_me.move_finder` and the learned opponents in
 :mod:`chess_mini_me.cloner` into a playable game. It is the only module that
 depends on Pygame, so importing the engine for tests or scripting never
 requires a display.
 
 The window has a board on the left and a side panel on the right showing the
-move list, a status line and an action button (resign during play, save the
-game as PGN once it is over). Responsibilities are gathered into a single
-:class:`ChessInterface` object so the window, images, fonts and geometry are
-configured once and shared.
+move list, a status line and an action button. Longer operations such as
+downloading a player's games or training a Mini-Me run on a background thread
+and show a live progress screen, and results are shown on a notice screen that
+stays until the player dismisses it.
 """
 
 from __future__ import annotations
 
 import datetime
 import pathlib
+import threading
 
 import pygame
 
-from chess_mini_me import constants, opponent, pgn
+from chess_mini_me import constants, dialogs, opponent, pgn
 from chess_mini_me.engine import GameState, Move
 from chess_mini_me.training import (
     BLACK_WIN_VALUE,
     DRAW_VALUE,
+    LEARNING_PROFILE_NAME,
     WHITE_WIN_VALUE,
     StyleRecorder,
-    default_store,
+    list_profile_names,
+    store_for_profile,
 )
 
 # A square on the board, or ``None`` when nothing is selected.
@@ -46,8 +49,30 @@ TEXT_COLOUR = pygame.Color(235, 235, 235)
 MUTED_TEXT_COLOUR = pygame.Color(170, 165, 158)
 PANEL_COLOUR = pygame.Color(70, 66, 60)
 HIGHLIGHTED_PANEL_COLOUR = pygame.Color(120, 110, 95)
+FOCUSED_FIELD_COLOUR = pygame.Color(96, 110, 90)
 ACTION_BUTTON_COLOUR = pygame.Color(150, 80, 70)
+PRIMARY_BUTTON_COLOUR = pygame.Color(90, 130, 90)
+PROGRESS_BAR_COLOUR = pygame.Color(120, 170, 110)
 OVERLAY_COLOUR = pygame.Color(0, 0, 0)
+
+
+class _BackgroundProgress:
+    """Shared state for a task running on a background thread.
+
+    The worker thread updates the textual status, the optional completion
+    fraction and any detail lines; the main thread reads them to draw the
+    progress screen. Only simple attribute assignments cross the threads, which
+    is safe under Python's global interpreter lock.
+    """
+
+    def __init__(self) -> None:
+        """Start in an in-progress state with no detail."""
+        self.status = "Working ..."
+        self.fraction: float | None = None
+        self.detail_lines: list[str] = []
+        self.done = False
+        self.result: object | None = None
+        self.error: BaseException | None = None
 
 
 class ChessInterface:
@@ -76,8 +101,8 @@ class ChessInterface:
         self.move_font = pygame.font.SysFont("couriernew", self.square_size // 4)
 
         self.piece_images = self._load_piece_images()
-        self.store = default_store()
-        self.games_directory = self.store.directory / "games"
+        self.games_directory = pathlib.Path.cwd() / "saved_games"
+        self.selected_profile = self._initial_profile()
 
     # ------------------------------------------------------------------
     # Set-up helpers
@@ -127,6 +152,21 @@ class ChessInterface:
                 )
         return images
 
+    @staticmethod
+    def _initial_profile() -> str | None:
+        """Return the Mini-Me profile to select first, if any exist.
+
+        Returns:
+            A profile name, preferring the learned 'my-style' profile, or
+            ``None`` when no profiles have been created yet.
+        """
+        names = list_profile_names()
+        if not names:
+            return None
+        if LEARNING_PROFILE_NAME in names:
+            return LEARNING_PROFILE_NAME
+        return names[0]
+
     # ------------------------------------------------------------------
     # Top-level flow
     # ------------------------------------------------------------------
@@ -142,11 +182,11 @@ class ChessInterface:
                 break
         pygame.quit()
 
-    def _show_main_menu(self) -> tuple[str, str] | None:
+    def _show_main_menu(self) -> tuple[str, str, str | None] | None:
         """Display the main menu and collect the choice of players.
 
         Returns:
-            A tuple ``(white_player, black_player)`` of player-type names, or
+            A tuple ``(white_player, black_player, mini_me_profile)``, or
             ``None`` if the player closed the window.
         """
         white_player = opponent.PLAYER_HUMAN
@@ -166,26 +206,44 @@ class ChessInterface:
                         white_player = opponent.next_player_type(white_player)
                     elif action == "toggle_black":
                         black_player = opponent.next_player_type(black_player)
+                    elif action == "cycle_profile":
+                        self._cycle_profile()
                     elif action == "learn_lichess":
                         self._run_lichess_learning()
                     elif action == "start":
-                        return white_player, black_player
+                        return white_player, black_player, self.selected_profile
                     elif action == "quit":
                         return None
 
-    def _play_game(self, white_player: str, black_player: str) -> bool:
+    def _cycle_profile(self) -> None:
+        """Advance the selected Mini-Me profile to the next saved one."""
+        names = list_profile_names()
+        if not names:
+            self.selected_profile = None
+            return
+        if self.selected_profile not in names:
+            self.selected_profile = names[0]
+            return
+        position = names.index(self.selected_profile)
+        self.selected_profile = names[(position + 1) % len(names)]
+
+    def _play_game(
+        self, white_player: str, black_player: str, mini_me_profile: str | None
+    ) -> bool:
         """Play a single game.
 
         Args:
             white_player: The player type controlling White.
             black_player: The player type controlling Black.
+            mini_me_profile: The Mini-Me profile to play against, if any.
 
         Returns:
             True to return to the main menu, or False to quit the program.
         """
         gamestate = GameState()
         valid_moves = gamestate.get_valid_moves()
-        controller = opponent.OpponentController(self.store)
+        opponent_store = store_for_profile(mini_me_profile or LEARNING_PROFILE_NAME)
+        controller = opponent.OpponentController(opponent_store)
         recorder = StyleRecorder()
         player_labels = {
             constants.WHITE: opponent.PLAYER_LABELS[white_player],
@@ -223,8 +281,6 @@ class ChessInterface:
                         selected_square, is_dragging = None, False
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
-                    # The panel's action button works regardless of whose turn
-                    # it is: resign during play, or save the game once it ends.
                     if action_rect.collidepoint(event.pos):
                         if game_over:
                             saved_pgn_name = self._save_game(gamestate, player_labels)
@@ -275,7 +331,6 @@ class ChessInterface:
                             )
                             selected_square = None
 
-            # Let a computer or Mini-Me player reply, or resign, on its turn.
             if not game_over and not human_to_move:
                 if controller.should_resign(player_to_move, gamestate):
                     mover = (
@@ -297,8 +352,9 @@ class ChessInterface:
             self._draw_panel(gamestate, san_cache, player_to_move, saved_pgn_name)
             if gamestate.is_game_over():
                 self._draw_game_over_banner(gamestate)
+                pygame.display.flip()
                 if not has_learned_from_game:
-                    self._learn_from_game(gamestate, recorder, controller)
+                    self._learn_from_game(gamestate, recorder)
                     has_learned_from_game = True
             pygame.display.flip()
             self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
@@ -435,25 +491,29 @@ class ChessInterface:
 
     def _save_game(
         self, gamestate: GameState, player_labels: dict[str, str]
-    ) -> str:
-        """Save the finished game as a PGN file and return its name.
+    ) -> str | None:
+        """Save the finished game as a PGN file chosen by the player.
 
         Args:
             gamestate: The finished game.
             player_labels: A mapping from colour to a display name.
 
         Returns:
-            The file name the game was saved as.
+            The saved file's name, or ``None`` if the player cancelled.
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        file_name = f"game-{timestamp}.pgn"
+        suggested = f"chess-mini-me-{timestamp}.pgn"
+        path, cancelled = dialogs.ask_save_pgn_path(suggested, self.games_directory)
+        if cancelled or path is None:
+            return None
         pgn.save_pgn(
             gamestate,
-            self.games_directory / file_name,
+            path,
             white_name=player_labels[constants.WHITE],
             black_name=player_labels[constants.BLACK],
         )
-        return file_name
+        self._show_notice("Game saved", [f"Saved to:", str(path)])
+        return path.name
 
     @staticmethod
     def _game_result_value(gamestate: GameState) -> float:
@@ -473,106 +533,278 @@ class ChessInterface:
         return DRAW_VALUE
 
     def _learn_from_game(
-        self,
-        gamestate: GameState,
-        recorder: StyleRecorder,
-        controller: "opponent.OpponentController",
+        self, gamestate: GameState, recorder: StyleRecorder
     ) -> None:
-        """Teach the Mini-Me from the human moves of the finished game.
+        """Teach the 'my-style' Mini-Me from the human moves of the game.
 
         Args:
             gamestate: The finished game state.
             recorder: The recorder holding the human's moves.
-            controller: The opponent controller to refresh afterwards.
         """
         if not recorder.has_moves():
             return
-        self._draw_message_overlay(
-            ["Mini-Me is learning your style ..."], self.medium_font
+
+        examples = recorder.finalise(self._game_result_value(gamestate))
+        epochs = 4
+        store = store_for_profile(LEARNING_PROFILE_NAME)
+
+        def worker(progress: _BackgroundProgress) -> int:
+            """Train the learning profile, reporting progress per epoch."""
+            from chess_mini_me.training import learn_from_examples
+
+            def report(epoch: int, loss: float) -> None:
+                progress.fraction = (epoch + 1) / epochs
+                progress.status = f"Learning your style (epoch {epoch + 1}/{epochs})"
+                progress.detail_lines = [f"training loss {loss:.4f}"]
+
+            learn_from_examples(
+                store, examples, epochs=epochs, progress_callback=report
+            )
+            return len(examples)
+
+        progress = self._run_with_progress("Mini-Me is learning", worker)
+        if isinstance(progress.error, ImportError):
+            self._show_notice(
+                "PyTorch is needed to learn",
+                [
+                    "The Mini-Me learns with PyTorch, which is not installed.",
+                    "",
+                    "Install it, then play again to teach your Mini-Me:",
+                    "    pip install -r requirements-mini-me.txt",
+                    "or  pip install torch --index-url",
+                    "        https://download.pytorch.org/whl/cpu",
+                ],
+            )
+            return
+        if progress.error is not None:
+            self._show_notice("Learning failed", [str(progress.error)])
+            return
+
+        moves_learned = progress.result
+        self._refresh_selected_profile_after_learning()
+        self._show_notice(
+            "Mini-Me updated",
+            [
+                f"Learned from {moves_learned} of your moves.",
+                "",
+                f"Select the '{LEARNING_PROFILE_NAME}' profile in the menu",
+                "to play against your own clone.",
+            ],
         )
-        pygame.display.flip()
-        try:
-            opponent.learn_from_finished_game(
-                self.store, recorder, self._game_result_value(gamestate)
-            )
-            controller.reload_mini_me()
-        except ImportError:
-            self._draw_message_overlay(
-                ["Install PyTorch to let the Mini-Me learn."], self.small_font
-            )
-            pygame.display.flip()
-            pygame.time.wait(1500)
+
+    def _refresh_selected_profile_after_learning(self) -> None:
+        """Select the learning profile if no profile was selected before."""
+        if self.selected_profile is None:
+            self.selected_profile = LEARNING_PROFILE_NAME
 
     def _run_lichess_learning(self) -> None:
-        """Prompt for a Lichess username and train the Mini-Me from it."""
-        username = self._text_input_prompt("Lichess username (Enter to confirm):")
-        if not username:
+        """Collect Lichess settings, then download, analyse and train."""
+        settings = self._lichess_config_screen()
+        if settings is None:
             return
-        from chess_mini_me import lichess
-        from chess_mini_me.training import learn_from_examples
 
-        try:
-            self._draw_message_overlay(
-                [f"Downloading {username}'s games ..."], self.medium_font
+        username = settings["username"]
+        profile_name = settings["profile"]
+        maximum_games = settings["games"]
+        rated_only = settings["rated"]
+        epochs = 8
+
+        def worker(progress: _BackgroundProgress) -> dict[str, object]:
+            """Download, analyse and train, reporting progress as it goes."""
+            from chess_mini_me import lichess
+            from chess_mini_me.training import learn_from_examples
+
+            progress.status = f"Downloading up to {maximum_games} games ..."
+            progress.detail_lines = [f"from lichess.org/@/{username}"]
+            pgn_text = lichess.download_games(
+                username, max_games=maximum_games, rated_only=rated_only
             )
-            pygame.display.flip()
-            pgn_text = lichess.download_games(username)
 
-            self._draw_message_overlay(["Analysing playing style ..."], self.medium_font)
-            pygame.display.flip()
+            progress.status = "Analysing playing style ..."
+            progress.detail_lines = []
             games = lichess.analyse_games(pgn_text, username)
             examples = lichess.extract_examples(pgn_text, username)
             if len(examples) == 0:
-                self._show_temporary_message(
-                    ["No games were found for that player."], self.medium_font
-                )
-                return
+                return {"summary": ["No games were found for that player."], "trained": 0}
 
-            summary_lines = lichess.summarise_style(games).splitlines()
-            self._draw_message_overlay(
-                ["Training the Mini-Me ...", ""] + summary_lines[:6], self.small_font
-            )
-            pygame.display.flip()
-            learn_from_examples(self.store, examples, epochs=8)
-            self._show_temporary_message(
-                [f"Mini-Me trained on {len(examples)} of", f"{username}'s moves."],
-                self.medium_font,
-            )
-        except ValueError as error:
-            self._show_temporary_message([str(error)], self.medium_font)
-        except ImportError as error:
-            self._show_temporary_message(
-                ["This feature needs extra libraries:", str(error)], self.small_font
-            )
+            def report(epoch: int, loss: float) -> None:
+                progress.fraction = (epoch + 1) / epochs
+                progress.status = f"Training the Mini-Me (epoch {epoch + 1}/{epochs})"
+                progress.detail_lines = [f"training loss {loss:.4f}"]
 
-    def _text_input_prompt(self, prompt_text: str) -> str | None:
-        """Collect a single line of text from the player.
+            learn_from_examples(
+                store_for_profile(profile_name), examples, epochs=epochs,
+                progress_callback=report,
+            )
+            return {
+                "summary": lichess.summarise_style(games).splitlines(),
+                "trained": len(examples),
+            }
+
+        progress = self._run_with_progress(
+            f"Building Mini-Me from {username}", worker
+        )
+
+        if isinstance(progress.error, ImportError):
+            self._show_notice(
+                "Extra libraries are needed",
+                [
+                    "Importing from Lichess needs a few extra libraries:",
+                    "    pip install -r requirements-mini-me.txt",
+                    "",
+                    str(progress.error),
+                ],
+            )
+            return
+        if isinstance(progress.error, ValueError):
+            self._show_notice("Could not import games", [str(progress.error)])
+            return
+        if progress.error is not None:
+            self._show_notice("Import failed", [str(progress.error)])
+            return
+
+        outcome = progress.result
+        trained = outcome["trained"]
+        if trained == 0:
+            self._show_notice("No games found", outcome["summary"])
+            return
+
+        self.selected_profile = profile_name
+        self._show_notice(
+            f"Mini-Me '{profile_name}' is ready",
+            [f"Trained on {trained} of {username}'s moves.", ""]
+            + list(outcome["summary"]),
+        )
+
+    # ------------------------------------------------------------------
+    # Background progress and notices
+    # ------------------------------------------------------------------
+
+    def _run_with_progress(
+        self, title: str, worker
+    ) -> _BackgroundProgress:
+        """Run a worker on a background thread while showing progress.
 
         Args:
-            prompt_text: The prompt to display above the input box.
+            title: The heading shown on the progress screen.
+            worker: A callable taking a :class:`_BackgroundProgress` to update.
 
         Returns:
-            The entered text, or ``None`` if the player cancelled.
+            The completed :class:`_BackgroundProgress`, holding the result or
+            the error raised by the worker.
         """
-        entered_text = ""
+        progress = _BackgroundProgress()
+
+        def run() -> None:
+            try:
+                progress.result = worker(progress)
+            except BaseException as error:  # noqa: BLE001 - reported to the user
+                progress.error = error
+            finally:
+                progress.done = True
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+        quit_requested = False
+        frame = 0
+        while not progress.done:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    quit_requested = True
+            self._draw_progress_screen(title, progress, frame)
+            pygame.display.flip()
+            self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
+            frame += 1
+
+        if quit_requested:
+            # Let the enclosing loop see the close request and exit cleanly.
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
+        return progress
+
+    def _draw_progress_screen(
+        self, title: str, progress: _BackgroundProgress, frame: int
+    ) -> None:
+        """Draw the progress screen for a running background task.
+
+        Args:
+            title: The heading to show.
+            progress: The current progress state.
+            frame: The current frame counter, used for the spinner.
+        """
+        self.screen.fill(BACKGROUND_COLOUR)
+        centre_y = self.window_height // 3
+        self._blit_centred_text(
+            title, self.large_font, centre_y, baseline_is_centre=True,
+            width=self.window_width,
+        )
+
+        dots = "." * (1 + (frame // 8) % 3)
+        self._blit_centred_text(
+            progress.status + dots, self.medium_font, centre_y + self.square_size,
+            baseline_is_centre=True, width=self.window_width,
+        )
+
+        bar = pygame.Rect(
+            self.window_width // 4, centre_y + self.square_size * 2,
+            self.window_width // 2, self.square_size // 2,
+        )
+        pygame.draw.rect(self.screen, PANEL_COLOUR, bar, border_radius=6)
+        if progress.fraction is not None:
+            filled = bar.copy()
+            filled.width = int(bar.width * max(0.0, min(1.0, progress.fraction)))
+            pygame.draw.rect(self.screen, PROGRESS_BAR_COLOUR, filled, border_radius=6)
+        else:
+            # An indeterminate sweep when there is no measurable fraction.
+            sweep_width = bar.width // 4
+            position = (frame * 6) % (bar.width + sweep_width) - sweep_width
+            sweep = pygame.Rect(
+                bar.left + max(0, position), bar.top,
+                min(sweep_width, bar.width), bar.height,
+            )
+            pygame.draw.rect(self.screen, PROGRESS_BAR_COLOUR, sweep, border_radius=6)
+
+        for index, line in enumerate(progress.detail_lines[:3]):
+            self._blit_centred_text(
+                line, self.small_font,
+                bar.bottom + self.square_size // 2 + index * self.small_font.get_height(),
+                baseline_is_centre=True, width=self.window_width,
+            )
+
+    def _show_notice(self, title: str, lines: list[str]) -> None:
+        """Show a message that stays until the player dismisses it.
+
+        Args:
+            title: The heading of the notice.
+            lines: The body lines of the notice.
+        """
+        close_button = pygame.Rect(
+            (self.window_width - self.square_size * 2) // 2,
+            self.window_height - int(self.square_size * 1.4),
+            self.square_size * 2,
+            self.square_size,
+        )
         while True:
             self.screen.fill(BACKGROUND_COLOUR)
             self._blit_centred_text(
-                prompt_text, self.medium_font, self.window_height // 2 - self.square_size,
-                baseline_is_centre=True, width=self.window_width,
+                title, self.large_font, self.square_size,
+                width=self.window_width,
             )
-            box = pygame.Rect(
-                self.window_width // 6, self.window_height // 2,
-                self.window_width * 2 // 3, self.square_size,
+            top = self.square_size * 3
+            for index, line in enumerate(lines):
+                rendered = self.small_font.render(line, True, TEXT_COLOUR)
+                self.screen.blit(
+                    rendered,
+                    (
+                        (self.window_width - rendered.get_width()) // 2,
+                        top + index * (self.small_font.get_height() + 4),
+                    ),
+                )
+            pygame.draw.rect(
+                self.screen, PRIMARY_BUTTON_COLOUR, close_button, border_radius=8
             )
-            pygame.draw.rect(self.screen, PANEL_COLOUR, box, border_radius=6)
             self._blit_centred_text(
-                entered_text or "_", self.medium_font, box.centery,
-                baseline_is_centre=True, width=self.window_width,
-            )
-            self._blit_centred_text(
-                "Enter to confirm, Escape to cancel", self.small_font,
-                self.window_height // 2 + self.square_size * 2,
+                "Close", self.medium_font, close_button.centery,
                 baseline_is_centre=True, width=self.window_width,
             )
             pygame.display.flip()
@@ -580,30 +812,238 @@ class ChessInterface:
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    pygame.event.post(pygame.event.Event(pygame.QUIT))
+                    return
+                if event.type == pygame.KEYDOWN and event.key in (
+                    pygame.K_RETURN, pygame.K_ESCAPE, pygame.K_SPACE
+                ):
+                    return
+                if event.type == pygame.MOUSEBUTTONDOWN and close_button.collidepoint(
+                    event.pos
+                ):
+                    return
+
+    # ------------------------------------------------------------------
+    # Lichess configuration screen
+    # ------------------------------------------------------------------
+
+    def _lichess_config_screen(self) -> dict[str, object] | None:
+        """Collect the settings for a Lichess import.
+
+        Returns:
+            A settings dictionary with ``username``, ``profile``, ``games`` and
+            ``rated`` keys, or ``None`` if the player cancelled.
+        """
+        username = ""
+        profile = ""
+        games = 200
+        rated_only = True
+        focus = "username"
+        game_steps = [10, 25, 50, 100, 200, 300, 500, 750, 1000, 1500, 2000]
+
+        while True:
+            controls = self._draw_lichess_config(
+                username, profile, games, rated_only, focus
+            )
+            pygame.display.flip()
+            self.clock.tick(constants.MAXIMUM_FRAMES_PER_SECOND)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.event.post(pygame.event.Event(pygame.QUIT))
                     return None
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if controls["username"].collidepoint(event.pos):
+                        focus = "username"
+                    elif controls["profile"].collidepoint(event.pos):
+                        focus = "profile"
+                    elif controls["fewer"].collidepoint(event.pos):
+                        games = self._step_value(games, game_steps, -1)
+                    elif controls["more"].collidepoint(event.pos):
+                        games = self._step_value(games, game_steps, 1)
+                    elif controls["rated"].collidepoint(event.pos):
+                        rated_only = not rated_only
+                    elif controls["start"].collidepoint(event.pos):
+                        if username.strip():
+                            return {
+                                "username": username.strip(),
+                                "profile": (profile.strip() or username.strip()),
+                                "games": games,
+                                "rated": rated_only,
+                            }
+                    elif controls["cancel"].collidepoint(event.pos):
+                        return None
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN:
-                        return entered_text.strip()
                     if event.key == pygame.K_ESCAPE:
                         return None
-                    if event.key == pygame.K_BACKSPACE:
-                        entered_text = entered_text[:-1]
+                    if event.key == pygame.K_TAB:
+                        focus = "profile" if focus == "username" else "username"
+                    elif event.key == pygame.K_RETURN:
+                        if username.strip():
+                            return {
+                                "username": username.strip(),
+                                "profile": (profile.strip() or username.strip()),
+                                "games": games,
+                                "rated": rated_only,
+                            }
+                    elif event.key == pygame.K_BACKSPACE:
+                        if focus == "username":
+                            username = username[:-1]
+                        else:
+                            profile = profile[:-1]
                     elif event.unicode.isprintable():
-                        entered_text += event.unicode
+                        if focus == "username":
+                            username += event.unicode
+                        else:
+                            profile += event.unicode
 
-    def _show_temporary_message(
-        self, lines: list[str], font: pygame.font.Font, milliseconds: int = 2200
-    ) -> None:
-        """Show a message over the board for a short time.
+    @staticmethod
+    def _step_value(value: int, steps: list[int], direction: int) -> int:
+        """Return the next value when stepping through a list of choices.
 
         Args:
-            lines: The lines of text to show.
-            font: The font to render with.
-            milliseconds: How long to display the message.
+            value: The current value.
+            steps: The ordered list of allowed values.
+            direction: ``-1`` to step down or ``1`` to step up.
+
+        Returns:
+            The neighbouring allowed value, clamped to the ends.
         """
-        self._draw_message_overlay(lines, font)
-        pygame.display.flip()
-        pygame.time.wait(milliseconds)
+        if value in steps:
+            index = steps.index(value)
+        else:
+            index = min(range(len(steps)), key=lambda i: abs(steps[i] - value))
+        index = max(0, min(len(steps) - 1, index + direction))
+        return steps[index]
+
+    def _draw_lichess_config(
+        self, username: str, profile: str, games: int, rated_only: bool, focus: str
+    ) -> dict[str, pygame.Rect]:
+        """Draw the Lichess configuration screen and return its controls.
+
+        Args:
+            username: The current username text.
+            profile: The current profile-name text.
+            games: The chosen number of games.
+            rated_only: Whether only rated games are imported.
+            focus: Which text field currently has focus.
+
+        Returns:
+            A mapping from control name to its clickable rectangle.
+        """
+        self.screen.fill(BACKGROUND_COLOUR)
+        self._blit_centred_text(
+            "Train a Mini-Me from Lichess", self.large_font, self.square_size // 2,
+            width=self.window_width,
+        )
+
+        left = self.window_width // 6
+        field_width = self.window_width * 2 // 3
+        field_height = self.square_size
+        row_gap = int(field_height * 1.5)
+        top = int(self.square_size * 2)
+        controls: dict[str, pygame.Rect] = {}
+
+        username_box = pygame.Rect(left, top, field_width, field_height)
+        self._draw_field("Lichess username", username or "_", username_box,
+                         focus == "username")
+        controls["username"] = username_box
+
+        profile_box = pygame.Rect(left, top + row_gap, field_width, field_height)
+        placeholder = profile or (username or "(defaults to username)")
+        self._draw_field("Save as profile", placeholder, profile_box,
+                         focus == "profile")
+        controls["profile"] = profile_box
+
+        games_top = top + 2 * row_gap
+        self.screen.blit(
+            self.small_font.render("Games to import", True, MUTED_TEXT_COLOUR),
+            (left, games_top - self.small_font.get_height() - 2),
+        )
+        fewer = pygame.Rect(left, games_top, field_height, field_height)
+        more = pygame.Rect(left + field_width - field_height, games_top,
+                           field_height, field_height)
+        self._draw_text_button(fewer, "-")
+        self._draw_text_button(more, "+")
+        value_box = pygame.Rect(
+            fewer.right + 8, games_top, more.left - fewer.right - 16, field_height
+        )
+        pygame.draw.rect(self.screen, PANEL_COLOUR, value_box, border_radius=6)
+        self._blit_text_in_rect(str(games), self.medium_font, value_box)
+        controls["fewer"] = fewer
+        controls["more"] = more
+
+        rated_top = games_top + row_gap
+        rated_box = pygame.Rect(left, rated_top, field_width, field_height)
+        self._draw_text_button(
+            rated_box, f"Rated games only: {'Yes' if rated_only else 'No'}"
+        )
+        controls["rated"] = rated_box
+
+        button_width = field_width // 2 - 8
+        button_top = rated_top + row_gap
+        start = pygame.Rect(left, button_top, button_width, field_height)
+        cancel = pygame.Rect(left + field_width - button_width, button_top,
+                             button_width, field_height)
+        pygame.draw.rect(self.screen, PRIMARY_BUTTON_COLOUR, start, border_radius=8)
+        self._blit_text_in_rect("Start", self.medium_font, start)
+        pygame.draw.rect(self.screen, PANEL_COLOUR, cancel, border_radius=8)
+        self._blit_text_in_rect("Cancel", self.medium_font, cancel)
+        controls["start"] = start
+        controls["cancel"] = cancel
+        return controls
+
+    def _draw_field(
+        self, label: str, value: str, rectangle: pygame.Rect, focused: bool
+    ) -> None:
+        """Draw a labelled text field.
+
+        Args:
+            label: The label shown above the field.
+            value: The text shown inside the field.
+            rectangle: The field rectangle.
+            focused: Whether the field currently has focus.
+        """
+        self.screen.blit(
+            self.small_font.render(label, True, MUTED_TEXT_COLOUR),
+            (rectangle.left, rectangle.top - self.small_font.get_height() - 2),
+        )
+        colour = FOCUSED_FIELD_COLOUR if focused else PANEL_COLOUR
+        pygame.draw.rect(self.screen, colour, rectangle, border_radius=6)
+        rendered = self.medium_font.render(value, True, TEXT_COLOUR)
+        self.screen.blit(
+            rendered,
+            (rectangle.left + 10, rectangle.centery - rendered.get_height() // 2),
+        )
+
+    def _draw_text_button(self, rectangle: pygame.Rect, label: str) -> None:
+        """Draw a simple labelled button.
+
+        Args:
+            rectangle: The button rectangle.
+            label: The button text.
+        """
+        pygame.draw.rect(self.screen, PANEL_COLOUR, rectangle, border_radius=6)
+        self._blit_text_in_rect(label, self.medium_font, rectangle)
+
+    def _blit_text_in_rect(
+        self, text: str, font: pygame.font.Font, rectangle: pygame.Rect
+    ) -> None:
+        """Draw text centred inside a rectangle.
+
+        Args:
+            text: The text to draw.
+            font: The font to render with.
+            rectangle: The rectangle to centre within.
+        """
+        rendered = font.render(text, True, TEXT_COLOUR)
+        self.screen.blit(
+            rendered,
+            (
+                rectangle.centerx - rendered.get_width() // 2,
+                rectangle.centery - rendered.get_height() // 2,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Board drawing
@@ -850,9 +1290,7 @@ class ChessInterface:
         self.screen.blit(title, (left, padding))
 
         self._draw_move_list(san_moves, left, padding + title.get_height() + padding)
-        self._draw_panel_status(
-            gamestate, player_to_move, saved_pgn_name, left
-        )
+        self._draw_panel_status(gamestate, player_to_move, saved_pgn_name, left)
         self._draw_action_button(gamestate)
 
     def _draw_move_list(self, san_moves: list[str], left: int, top: int) -> None:
@@ -866,7 +1304,6 @@ class ChessInterface:
         row_height = self.move_font.get_height() + 4
         bottom = self.window_height - int(self.square_size * 1.6)
         visible_rows = max(1, (bottom - top) // row_height)
-
         pairs = [
             (
                 index // 2 + 1,
@@ -922,14 +1359,7 @@ class ChessInterface:
         rectangle = self._action_button_rect()
         label = "Save as PGN" if gamestate.is_game_over() else "Resign"
         pygame.draw.rect(self.screen, ACTION_BUTTON_COLOUR, rectangle, border_radius=6)
-        rendered = self.small_font.render(label, True, TEXT_COLOUR)
-        self.screen.blit(
-            rendered,
-            (
-                rectangle.centerx - rendered.get_width() // 2,
-                rectangle.centery - rendered.get_height() // 2,
-            ),
-        )
+        self._blit_text_in_rect(label, self.small_font, rectangle)
 
     def _draw_game_over_banner(self, gamestate: GameState) -> None:
         """Draw the result of a finished game over the board.
@@ -989,33 +1419,29 @@ class ChessInterface:
         """
         self.screen.fill(BACKGROUND_COLOUR)
         self._blit_centred_text(
-            constants.WINDOW_TITLE, self.large_font, self.square_size // 2,
+            constants.WINDOW_TITLE, self.large_font, self.square_size // 3,
             width=self.window_width,
         )
 
-        mini_me_ready = self.store.model_path.exists()
-        status = (
-            "A trained Mini-Me is ready to play."
-            if mini_me_ready
-            else "No Mini-Me yet: play it or train from Lichess."
-        )
+        profile_label = self.selected_profile or "none yet"
+        status = f"Mini-Me profile: {profile_label}"
         rendered_status = self.small_font.render(status, True, MUTED_TEXT_COLOUR)
         self.screen.blit(
             rendered_status,
-            ((self.window_width - rendered_status.get_width()) // 2,
-             self.square_size + self.square_size // 3),
+            ((self.window_width - rendered_status.get_width()) // 2, self.square_size),
         )
 
         button_width = self.window_width // 2
-        button_height = int(self.square_size * 0.8)
+        button_height = int(self.square_size * 0.72)
         button_left = (self.window_width - button_width) // 2
-        first_top = int(self.square_size * 2.2)
-        spacing = button_height + self.square_size // 5
+        first_top = int(self.square_size * 1.7)
+        spacing = button_height + self.square_size // 6
 
         rows = (
             ("toggle_white", f"White: {opponent.PLAYER_LABELS[white_player]}", False),
             ("toggle_black", f"Black: {opponent.PLAYER_LABELS[black_player]}", False),
-            ("learn_lichess", "Learn from Lichess", False),
+            ("cycle_profile", f"Mini-Me: {profile_label}", False),
+            ("learn_lichess", "Train from Lichess", False),
             ("start", "Start game", True),
             ("quit", "Quit", True),
         )
@@ -1024,12 +1450,9 @@ class ChessInterface:
             rectangle = pygame.Rect(
                 button_left, first_top + index * spacing, button_width, button_height
             )
-            colour = HIGHLIGHTED_PANEL_COLOUR if emphasised else PANEL_COLOUR
+            colour = PRIMARY_BUTTON_COLOUR if emphasised else PANEL_COLOUR
             pygame.draw.rect(self.screen, colour, rectangle, border_radius=8)
-            self._blit_centred_text(
-                label, self.medium_font, rectangle.centery, baseline_is_centre=True,
-                width=self.window_width,
-            )
+            self._blit_text_in_rect(label, self.medium_font, rectangle)
             buttons[action] = rectangle
         return buttons
 
